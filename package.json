@@ -1,0 +1,25 @@
+{
+  "name": "botcommunityguard",
+  "version": "1.0.0",
+  "description": "WhatsApp bot to guard against group invites and foreign numbers",
+  "main": "inviteMonitor.js",
+  "scripts": {
+    "start": "cross-env DEBUG='-puppeteer:protocol:*' MODE=prod node inviteMonitor.js",
+    "start:test": "cross-env DEBUG='-puppeteer:protocol:*' MODE=test node inviteMonitor.js",
+    "dev": "cross-env DEBUG='-puppeteer:protocol:*' nodemon --signal SIGINT invitemonitor.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@vitalets/google-translate-api": "^9.2.1",
+    "firebase-admin": "^13.4.0",
+    "puppeteer": "^24.8.2",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.27.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "nodemon": "^3.1.10"
+  }
+}
