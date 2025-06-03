@@ -1,6 +1,7 @@
 transfer one file:
 new bot (guard1) inly inviteMonitor copy:
-scp -i ~/.ssh/id_ed25519 D:/WebApps/BotCommunityGuard/inviteMonitor.js ec2-user@44.204.100.194:~/guard1/
+scp -i ~/.ssh/id_ed25519 /d/WebApps/CommunityGuard_02062025/* ec2-user@44.204.100.194:~/guard1/
+
 
 
 scp -i /d/WebApps/BotCommunityGuard/communityGuardKey.pem     /d/WebApps/BotCommunityGuard/inviteMonitor.js     ec2-user@44.213.149.11:~/BotCommunityGuard/inviteMonitor.js

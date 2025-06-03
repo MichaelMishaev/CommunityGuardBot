@@ -89,7 +89,7 @@ client.on('ready', async () => {
    mutedUsers = await loadMutedUsers();
    console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.0.6 - LID Support Update`);
+   console.log(`[${getTimestamp()}] Version 1.0.9 - LID Support Update`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
@@ -130,9 +130,24 @@ function getParticipantJid(participant) {
 // Enhanced helper to get message author with LID support
 function getMessageAuthor(msg) {
   // Try multiple ways to get the author
+  // For group messages, author contains the sender's JID
   if (msg.author) return msg.author;
-  if (msg.from) return msg.from;
+  
+  // For direct messages or when author is not set
+  if (msg.from) {
+    // If it's a group message, extract participant
+    if (msg.from.includes('@g.us') && msg.id?.participant) {
+      return msg.id.participant;
+    }
+    return msg.from;
+  }
+  
+  // Fallback to participant if available
   if (msg.id?.participant) return msg.id.participant;
+  
+  // Last resort - check if message has _data with author
+  if (msg._data?.author) return msg._data.author;
+  
   return null;
 }
 
@@ -571,24 +586,26 @@ if (cleaned === '#help') {
       '12. *#mute (reply) [minutes]* - Mute a specific user for the specified number of minutes\n    (admin only), kicked out if they send more than 3 messages while muted',
       '13. *#botkick* - Automatically kick out all blacklisted users from the current group',
       '14. *#warn* - Send a warning to a user (reply to their message, admin only)',
-      '15. *#clear* - Delete all messages from a specific user (reply to their message, admin only)',
+      '15. *#clear* - Delete last 10 messages from a user (reply to their message OR use #clear [JID/number])',
+      '16. *#cleartest* - Test bot\'s message deletion capabilities (admin only)',
+      '17. *#cleardebug* - Debug message author detection (reply to message)',
       '',
       '*👑 Super Admin Commands:*',
-      '16. *#promote* - Promote a user to admin (reply to their message, super admin only)',
-      '17. *#demote* - Demote an admin to regular user (reply to their message, super admin only)',
+      '18. *#promote* - Promote a user to admin (reply to their message, super admin only)',
+      '19. *#demote* - Demote an admin to regular user (reply to their message, super admin only)',
       '',
       '*📢 Communication Commands:*',
-      '18. *#announce [message]* - Send an announcement to all group members (admin only)',
-      '19. *#pin [days]* - Pin a message (reply to message, default 7 days, admin only)',
-      '20. *#translate* - Translate a message to Hebrew (reply to message or provide text)',
+      '20. *#announce [message]* - Send an announcement to all group members (admin only)',
+      '21. *#pin [days]* - Pin a message (reply to message, default 7 days, admin only)',
+      '22. *#translate* - Translate a message to Hebrew (reply to message or provide text)',
       '',
       '*📊 Information Commands:*',
-      '21. *#stats* - Show group statistics (member count, admin count, etc.)',
-      '22. *#commands* - Display all loaded custom commands from Firestore',
-      '23. *#help* - Show this help message',
+      '23. *#stats* - Show group statistics (member count, admin count, etc.)',
+      '24. *#commands* - Display all loaded custom commands from Firestore',
+      '25. *#help* - Show this help message',
       '',
       '*🔄 Recovery Commands:*',
-      '24. *#unb [number]* - Unban a previously banned number\n    (e.g., #unb 972555123456), must be as a reply to a bot message',
+      '26. *#unb [number]* - Unban a previously banned number\n    (e.g., #unb 972555123456), must be as a reply to a bot message',
       '',
       '💡 *Note:* Use these commands responsibly to ensure group safety and proper user behavior.',
       '⚠️ *WhatsApp URLs:* When someone posts a WhatsApp group link, they are automatically kicked and blacklisted.',
@@ -1057,91 +1074,130 @@ if (cmd === '#stats') {
 
 // ─────── #clear – Clear messages from a specific user (admin only) ───────
 if (msg.hasQuotedMsg && cmd === '#clear') {
+    const chat = await msg.getChat().catch(() => null);
+    const quotedMsg = await msg.getQuotedMessage().catch(() => null);
+    
+    if (!chat?.isGroup || !quotedMsg) {
+        await msg.reply('⚠️ This command requires a group and quoted message.');
+        return;
+    }
+    
+    // Check if sender is admin
+    const sender = await msg.getContact();
+    const senderJid = getParticipantJid(sender);
+    const isAdmin = chat.participants.some(p => {
+        const pJid = getParticipantJid(p);
+        return pJid === senderJid && p.isAdmin;
+    });
+    
+    if (!isAdmin) {
+        await msg.reply('🚫 You must be an admin to clear messages.');
+        return;
+    }
+    
+    // Check if bot is admin (same logic as other commands)
+    let botIsAdmin = false;
+    for (const p of chat.participants) {
+        try {
+            const contact = await client.getContactById(getParticipantJid(p));
+            if (contact.isMe && p.isAdmin) {
+                botIsAdmin = true;
+                break;
+            }
+        } catch (e) {
+            // Continue
+        }
+    }
+    
+    if (!botIsAdmin) {
+        await msg.reply('⚠️ The bot must be an admin to delete messages.');
+        return;
+    }
+    
+    // Get target using SAME logic as #kick command
+    const target = getMessageAuthor(quotedMsg);
+    if (!target) {
+        await msg.reply('⚠️ Could not determine target user.');
+        return;
+    }
+    
+    console.log(`[${getTimestamp()}] #clear target: ${target}`);
+    
     try {
-        const chat = await msg.getChat();
-        const sender = await msg.getContact();
-        
-        if (!chat.isGroup) {
-            await msg.reply('⚠️ This command can only be used in groups.');
-            return;
+        // Step 1: Delete the quoted message (we know this works)
+        console.log(`[${getTimestamp()}] Deleting quoted message...`);
+        try {
+            await quotedMsg.delete(true);
+            console.log(`[${getTimestamp()}] ✅ Quoted message deleted`);
+        } catch (e) {
+            console.log(`[${getTimestamp()}] ❌ Failed to delete quoted message: ${e.message}`);
         }
         
-        const senderJid = getParticipantJid(sender);
-        const isAdmin = chat.participants.some(p => {
-            const pJid = getParticipantJid(p);
-            return pJid === senderJid && p.isAdmin;
-        });
+        // Step 2: Find and delete recent messages (last 20 messages only for better success rate)
+        console.log(`[${getTimestamp()}] Finding recent messages...`);
+        const messages = await chat.fetchMessages({ limit: 20 }); // Only recent messages
         
-        if (!isAdmin) {
-            await msg.reply('🚫 You must be an admin to clear messages.');
-            return;
-        }
+        let deletedCount = 1; // Count the quoted message
+        let foundCount = 0;
         
-        const quotedMsg = await msg.getQuotedMessage();
-        const target = getMessageAuthor(quotedMsg);
-        
-        if (!target) {
-            await msg.reply('⚠️ Unable to identify the user.');
-            return;
-        }
-        
-        // Check if bot is admin first - find bot by checking isMe property
-        let botIsAdmin = false;
-        for (const p of chat.participants) {
-            try {
-                const contact = await client.getContactById(getParticipantJid(p));
-                if (contact.isMe && p.isAdmin) {
-                    botIsAdmin = true;
-                    break;
+        // Process messages in reverse order (newest first)
+        for (let i = 0; i < messages.length; i++) {
+            const message = messages[i];
+            const messageAuthor = getMessageAuthor(message);
+            
+            // Skip if not from target, is command, or is already deleted quoted message
+            if (messageAuthor !== target || 
+                message.id.id === msg.id.id || 
+                message.id.id === quotedMsg.id.id) {
+                continue;
+            }
+            
+            foundCount++;
+            
+            // Only try to delete the most recent messages (better chance of success)
+            if (foundCount <= 9) { // Plus the quoted message = 10 total
+                try {
+                    console.log(`[${getTimestamp()}] Deleting recent message ${foundCount}: ${message.body?.substring(0, 30) || '[media]'}`);
+                    
+                    // Check message age (only delete recent messages)
+                    const messageAge = Date.now() - (message.timestamp * 1000);
+                    const oneHour = 60 * 60 * 1000;
+                    
+                    if (messageAge < oneHour) {
+                        // Recent message - should delete successfully
+                        await message.delete(true);
+                        deletedCount++;
+                        console.log(`[${getTimestamp()}] ✅ Deleted recent message ${foundCount}`);
+                    } else {
+                        // Old message - try but might not work
+                        console.log(`[${getTimestamp()}] ⚠️ Message is ${Math.round(messageAge / (1000 * 60))} minutes old`);
+                        await message.delete(true);
+                        deletedCount++;
+                        console.log(`[${getTimestamp()}] ✅ Deleted old message ${foundCount}`);
+                    }
+                    
+                    // Delay between deletions
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                } catch (e) {
+                    console.error(`[${getTimestamp()}] ❌ Failed to delete message ${foundCount}: ${e.message}`);
                 }
-            } catch (e) {
-                // Continue checking
             }
         }
         
-        if (!botIsAdmin) {
-            await msg.reply('⚠️ The bot must be an admin to delete messages.');
-            return;
-        }
-        
-        // Get more messages and find last 10 from target user
-        await msg.reply('🔄 Searching for messages to delete...');
-        const messages = await chat.fetchMessages({ limit: 200 });
-        const targetMessages = [];
-        
-        // Collect messages from target user
-        for (const message of messages) {
-            if (getMessageAuthor(message) === target && targetMessages.length < 10) {
-                targetMessages.push(message);
-            }
-        }
-        
-        let deletedCount = 0;
-        let failedCount = 0;
-        
-        // Delete the messages
-        for (const message of targetMessages) {
-            try {
-                await message.delete(true);
-                deletedCount++;
-                // Small delay to avoid rate limiting
-                await new Promise(resolve => setTimeout(resolve, 100));
-            } catch (e) {
-                failedCount++;
-                console.error(`Failed to delete message: ${e.message}`);
-            }
-        }
+        console.log(`[${getTimestamp()}] Clear completed: ${deletedCount} messages processed, ${foundCount} found`);
         
         if (deletedCount > 0) {
-            await msg.reply(`🧹 Successfully deleted ${deletedCount} messages from @${target.split('@')[0]}${failedCount > 0 ? ` (${failedCount} failed)` : ''}`);
-            console.log(`[${getTimestamp()}] 🧹 Cleared ${deletedCount} messages from ${target}`);
+        //    await msg.reply(`🧹 Deleted ${deletedCount} messages from @${target.split('@')[0]}`);
         } else {
-            await msg.reply(`⚠️ No messages found from @${target.split('@')[0]} in recent history.`);
+        //    await msg.reply(`⚠️ No messages found to delete from @${target.split('@')[0]}`);
         }
+        
     } catch (err) {
-        console.error('❌ Clear error:', err.message);
+        console.error(`[${getTimestamp()}] ❌ Clear error:`, err.message);
         await msg.reply('❌ Failed to clear messages.');
     }
+    
     return;
 }
 
@@ -1260,6 +1316,181 @@ if (cmd === '#announce') {
 }
 
 // ─────── #pin – Pin message (admin only) ───────
+// ─────── #cleardebug – Debug message authors ───────
+if (msg.hasQuotedMsg && cmd === '#cleardebug') {
+    try {
+        const chat = await msg.getChat();
+        const quotedMsg = await msg.getQuotedMessage();
+        
+        // Get target from quoted message
+        const target = getMessageAuthor(quotedMsg);
+        const targetJid = jidKey(target);
+        
+        console.log(`[${getTimestamp()}] === CLEAR DEBUG ===`);
+        console.log(`[${getTimestamp()}] Quoted message author: ${target}`);
+        console.log(`[${getTimestamp()}] Normalized target JID: ${targetJid}`);
+        
+        // Fetch recent messages
+        const messages = await chat.fetchMessages({ limit: 20 });
+        
+        let debugInfo = '🔍 *Clear Debug Info*\n\n';
+        debugInfo += `Target: ${target}\n`;
+        debugInfo += `Normalized: ${targetJid}\n\n`;
+        
+        let matchCount = 0;
+        const matchedMessages = [];
+        
+        // First pass: count all matches
+        for (let i = 0; i < messages.length; i++) {
+            const message = messages[i];
+            const author = getMessageAuthor(message);
+            const authorJid = jidKey(author);
+            const isMatch = authorJid === targetJid;
+            
+            if (isMatch) {
+                matchCount++;
+                matchedMessages.push({ index: i + 1, message, author, authorJid });
+            }
+        }
+        
+        debugInfo += `*Total Matches: ${matchCount}*\n\n`;
+        
+        // Show matched messages
+        if (matchedMessages.length > 0) {
+            debugInfo += '*Matched Messages:*\n';
+            matchedMessages.slice(0, 10).forEach((match, idx) => {
+                debugInfo += `${idx + 1}. Message #${match.index}\n`;
+                debugInfo += `   Author: ${match.author}\n`;
+                debugInfo += `   Body: ${match.message.body?.substring(0, 30) || '[media]'}...\n\n`;
+            });
+            if (matchedMessages.length > 10) {
+                debugInfo += `... and ${matchedMessages.length - 10} more\n\n`;
+            }
+        }
+        
+        debugInfo += '*First 10 Messages (for reference):*\n';
+        for (let i = 0; i < Math.min(10, messages.length); i++) {
+            const message = messages[i];
+            const author = getMessageAuthor(message);
+            const authorJid = jidKey(author);
+            const isMatch = authorJid === targetJid;
+            
+            debugInfo += `${i + 1}. Author: ${author}\n`;
+            debugInfo += `   Match: ${isMatch ? '✅' : '❌'}\n`;
+            debugInfo += `   Body: ${message.body?.substring(0, 20) || '[media]'}...\n\n`;
+        }
+        
+        await msg.reply(debugInfo);
+        console.log(`[${getTimestamp()}] Debug info sent`);
+        
+    } catch (err) {
+        console.error('❌ Clear debug error:', err.message);
+        await msg.reply('❌ Failed to debug clear command.');
+    }
+    return;
+}
+
+
+// ─────── #cleartest – Test message deletion capabilities ───────
+if (cmd === '#cleartest') {
+    try {
+        const chat = await msg.getChat();
+        const sender = await msg.getContact();
+        
+        if (!chat.isGroup) {
+            await msg.reply('⚠️ This command can only be used in groups.');
+            return;
+        }
+        
+        // Only allow admins to run this test
+        const senderJid = getParticipantJid(sender);
+        const isAdmin = chat.participants.some(p => {
+            const pJid = getParticipantJid(p);
+            return pJid === senderJid && p.isAdmin;
+        });
+        
+        if (!isAdmin) {
+            await msg.reply('🚫 You must be an admin to run clear test.');
+            return;
+        }
+        
+        await msg.reply('🧪 Running message deletion capability test...');
+        
+        // Test 1: Can bot delete its own message?
+        const testMsg = await chat.sendMessage('🧪 Test message from bot - will try to delete this');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        let testResults = '📋 *Clear Command Test Results*\n\n';
+        
+        try {
+            await testMsg.delete(true);
+            testResults += '✅ Bot can delete its own messages\n';
+        } catch (e) {
+            testResults += '❌ Bot CANNOT delete its own messages\n';
+            testResults += `   Error: ${e.message}\n`;
+        }
+        
+        // Test 2: Check bot admin status
+        let botIsAdmin = false;
+        for (const p of chat.participants) {
+            try {
+                const contact = await client.getContactById(getParticipantJid(p));
+                if (contact.isMe && p.isAdmin) {
+                    botIsAdmin = true;
+                    break;
+                }
+            } catch (e) {
+                // Continue
+            }
+        }
+        
+        testResults += botIsAdmin ? '✅ Bot is admin in this group\n' : '❌ Bot is NOT admin in this group\n';
+        
+        // Test 3: Try to delete a recent message from someone else
+        const messages = await chat.fetchMessages({ limit: 20 });
+        let otherMessage = null;
+        
+        for (const message of messages) {
+            if (!message.fromMe && message.id.id !== msg.id.id) {
+                otherMessage = message;
+                break;
+            }
+        }
+        
+        if (otherMessage) {
+            try {
+                await otherMessage.delete(true);
+                testResults += "✅ Bot can delete others' messages\n";
+            } catch (e) {
+                testResults += "❌ Bot CANNOT delete others' messages\n";
+                testResults += `   Error: ${e.message}\n`;
+            }
+        } else {
+            testResults += "ℹ️ No other messages found to test\n";
+        }
+        
+        // Test 4: Message age check
+        testResults += '\n🕒 *Message Age Limits:*\n';
+        testResults += '- Admins: Can delete any message\n';
+        testResults += '- Non-admins: Only messages < 24 hours\n';
+        testResults += '- Own messages: Usually deletable anytime\n';
+        
+        testResults += '\n💡 *Recommendations:*\n';
+        if (!botIsAdmin) {
+            testResults += '⚠️ Make the bot an admin for full functionality\n';
+        }
+        testResults += '- Use #clear on recent messages only\n';
+        testResults += '- Bot must be admin to delete all messages\n';
+        
+        await msg.reply(testResults);
+        
+    } catch (err) {
+        console.error('❌ Clear test error:', err.message);
+        await msg.reply('❌ Failed to run clear test.');
+    }
+    return;
+}
+
 if (msg.hasQuotedMsg && cmd === '#pin') {
     try {
         const chat = await msg.getChat();
