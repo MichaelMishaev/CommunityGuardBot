@@ -1,12 +1,17 @@
 // inviteMonitor.js
-console.log('🚀 Bot starting... initializing WhatsApp Web');
-
 const qrcode = require('qrcode-terminal');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const { addToWhitelist, removeFromWhitelist, listWhitelist } = require('./services/whitelistService');
 const { addToBlacklist, removeFromBlacklist, listBlacklist, isBlacklisted } = require('./services/blacklistService');
 const { addMutedUser, removeMutedUser, loadMutedUsers } = require('./services/muteService');
+const { jidKey } = require('./utils/jidUtils');
 
+// Add timestamp helper function
+function getTimestamp() {
+  return new Date().toLocaleString('en-GB', { timeZone: 'Asia/Jerusalem' });
+}
+
+console.log(`[${getTimestamp()}] 🚀 Bot starting... initializing WhatsApp Web`);
 
 const { translate } = require('@vitalets/google-translate-api');
 
@@ -35,9 +40,9 @@ async function loadCommands() {
       const cmd = doc.data().cmd.trim().toLowerCase();
       cachedCommands[cmd] = doc.data();
     });
-    console.log('📥 Commands loaded:', Object.keys(cachedCommands));
+    console.log(`[${getTimestamp()}] 📥 Commands loaded:`, Object.keys(cachedCommands));
   } catch (e) {
-    console.error('❌ failed to load commands:', e);
+    console.error(`[${getTimestamp()}] ❌ failed to load commands:`, e);
   }
 }
 // ───────────────────────────────────────────────────────
@@ -61,14 +66,14 @@ const client = new Client({
 
 /* ───────────── ONE-TIME LOGIN HELPERS ───────────── */
 client.on('qr', qr => {
-  console.log('[DEBUG] QR code received, generating…');
+  console.log(`[${getTimestamp()}] [DEBUG] QR code received, generating…`);
   qrcode.generate(qr, { small: true });
-  console.log('📱  Scan the QR code above to log in.');
+  console.log(`[${getTimestamp()}] 📱  Scan the QR code above to log in.`);
 });
 
-client.on('authenticated', () => console.log('✅  Authenticated!'));
+client.on('authenticated', () => console.log(`[${getTimestamp()}] ✅  Authenticated!`));
 client.on('ready', async () => {
-  console.log('✅  Bot is ready and logged in!');
+  console.log(`[${getTimestamp()}] ✅  Bot is ready and logged in!`);
   console.log(`
    ██████╗░░█████╗░███╗░░░███╗░█████╗░██╗░░░██╗██╗░░░░░███████╗
   ██╔════╝░██╔══██╗████╗░████║██╔══██╗██║░░░██║██║░░░░░██╔════╝
@@ -78,73 +83,80 @@ client.on('ready', async () => {
   ░╚═════╝░░╚════╝░╚═╝░░░░░╚═╝╚═╝░░╚═╝░╚═════╝░╚══════╝╚══════╝
     🤖 CommunityGuard is now watching for group invite links…
   `);
-      // first load commands from Firestore
-      await loadCommands();
-      
-     mutedUsers = await loadMutedUsers();
-     console.log('✅ Mute list loaded');
+    // first load commands from Firestore
+    await loadCommands();
+    
+   mutedUsers = await loadMutedUsers();
+   console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-     console.log('Version 1.0.3');
-     console.log('✅  Bot is ready, commands cache populated!');
+   console.log(`[${getTimestamp()}] Version 1.0.6 - LID Support Update`);
+   console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
-client.on('auth_failure', e => console.error('❌  AUTH FAILED', e));
+client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
 
 /* ───────────── CONFIGURATION ───────────── */
 const ADMIN_PHONE = '972555020829';
+const ADMIN_LID = '972555020829';
 const ALERT_PHONE = '972544345287';
-const WHITELIST   = new Set([ADMIN_PHONE, ALERT_PHONE]);
+// Store whitelist as JIDs so it also matches new @lid accounts
+const WHITELIST   = new Set([ jidKey(ADMIN_PHONE), jidKey(ALERT_PHONE) ]);
 
-/* ───────────── #cf COMMAND ───────────── */
-/*
-client.on('message_create', async msg => {
-  const cleaned = msg.body.replace(/\u200e/g, '').trim().toLowerCase();
+// Helper to produce a user‐readable label (number if available, otherwise JID)
+function describeContact(contact) {
+  if (!contact) return '[unknown]';
+  // Prefer the full JID (works for both legacy and LID accounts)
+  const jid = contact.id?._serialized || contact._serialized;
+  // Fallback to legacy phone‐based number if still present
+  return jid || contact.number || '[unknown]';
+}
 
-    // manual reload
-  if (msg.fromMe && cleaned === '#reload') {
-    await loadCommands();
-    msg.reply('🔄 Commands reloaded successfully!');
-    return;
+// Enhanced helper to get participant JID with LID support
+function getParticipantJid(participant) {
+  // For LID users, the JID might be in different formats
+  if (participant.id?._serialized) {
+    return participant.id._serialized;
   }
-
-  // Firestore-defined commands
-  if (cachedCommands[cleaned]) {
-    return msg.reply(`📝 ${cachedCommands[cleaned].description}`);
+  if (participant._serialized) {
+    return participant._serialized;
   }
-
-  if (!msg.fromMe || cleaned !== '#cf') return;
-
-  const chat = await msg.getChat().catch(() => null);
-  if (!chat?.isGroup) return msg.reply('⛔ צריך לשלוח את הפקודה בתוך קבוצה.');
-
-  const botIsAdmin = chat.participants.some(p =>
-    p.id.user === client.info.wid.user && p.isAdmin
-  );
-  if (!botIsAdmin) return msg.reply('⚠️ הבוט לא אדמין בקבוצה הזו.');
-
-  const foreign = [];
-  for (const p of chat.participants) {
-    const c = await client.getContactById(p.id._serialized).catch(() => null);
-    if (c?.number && !c.number.startsWith('972')) {
-      foreign.push(`• ${c.pushname || 'לא ידוע'} (${c.number})`);
-    }
+  if (participant.id?.user) {
+    // Handle LID format (e.g., "123456@lid")
+    const server = participant.id.server || 'c.us';
+    return `${participant.id.user}@${server}`;
   }
-  const reply = foreign.length
-    ? `🌍 זוהו מספרים זרים:\n${foreign.join('\n')}`
-    : '✅ לא נמצאו מספרים זרים.';
-  msg.reply(reply);
-});
-*.
+  return null;
+}
+
+// Enhanced helper to get message author with LID support
+function getMessageAuthor(msg) {
+  // Try multiple ways to get the author
+  if (msg.author) return msg.author;
+  if (msg.from) return msg.from;
+  if (msg.id?.participant) return msg.id.participant;
+  return null;
+}
 
 /* ───────────── UNIFIED message_create HANDLER ───────────── */
+
+function cleanPhoneNumber(phone) {
+  // Remove any Unicode invisible characters (LRM, RLM, etc.)
+  const normalized = phone.replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '');
+  // Remove plus, spaces, dashes, and any other formatting characters
+  return normalized.replace(/[+\s-]/g, '');
+}
+
 client.on('message_create', async msg => {
   // strip bidi chars & normalise
   const cleaned  = msg.body.replace(/\u200e/g, '').trim();
   const lowered  = cleaned.toLowerCase();
-  const [cmd, arg] = lowered.split(/\s+/, 2);
+  // split into all parts, shift off the command, then re-join the rest:
+  const parts = lowered.split(/\s+/);
+  const cmd   = parts.shift();
+  const arg   = parts.join(' ');
 
     if (cmd === '#mute' && !msg.hasQuotedMsg) {
     // Check if the message is from an admin
-    console.log('🔊 Mute command received');
+    console.log(`[${getTimestamp()}] 🔊 Mute command received`);
     const chat = await msg.getChat();
     const sender = await msg.getContact();
 
@@ -153,36 +165,41 @@ client.on('message_create', async msg => {
       return;
     }
 
-    const isAdmin = chat.participants.some(p => p.id._serialized === sender.id._serialized && p.isAdmin);
+    const senderJid = getParticipantJid(sender);
+    const isAdmin = chat.participants.some(p => {
+      const pJid = getParticipantJid(p);
+      return pJid === senderJid && p.isAdmin;
+    });
+    
     if (!isAdmin) {
       await msg.reply('🚫 You must be an admin to mute the group.');
       return;
     }
 
     // Validate the mute duration
-    const muteDuration = parseInt(arg, 10);
-    if (isNaN(muteDuration) || muteDuration <= 0) {
+ 
+    if (!arg || isNaN(parseInt(arg, 10)) || parseInt(arg, 10) <= 0) {
       await msg.reply('⚠️ Please specify a valid number of minutes. Example: #mute 10');
       return;
     }
 
     // Mute the group (admin-only messages)
     try {
-      await chat.sendMessage(`🔇 הקבוצה הושתקה למשך ${muteDuration} דקות.`);
+      await chat.sendMessage(`🔇 הקבוצה הושתקה למשך ${arg} דקות.`);
 
       await chat.setMessagesAdminsOnly(true);
 
-      console.log(`✅ Group muted for ${muteDuration} minutes by ${sender.pushname}`);
+      console.log(`[${getTimestamp()}] ✅ Group muted for ${arg} minutes by ${sender.pushname}`);
 
       // Set a timeout to unmute after the specified duration
       setTimeout(async () => {
         await chat.setMessagesAdminsOnly(false);
         //await chat.sendMessage('🔊 Group has been unmuted.');
-        console.log('✅ Group unmuted automatically after timeout.');
-      }, muteDuration * 60000); // Convert minutes to milliseconds
+        console.log(`[${getTimestamp()}] ✅ Group unmuted automatically after timeout.`);
+      }, parseInt(arg, 10) * 60000); // Convert minutes to milliseconds
     } catch (err) {
       await msg.reply('❌ Failed to mute the group.');
-      console.error('Mute error:', err.message);
+      console.error(`[${getTimestamp()}] Mute error:`, err.message);
     }
     return;
   }
@@ -194,7 +211,15 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
     try {
         const chat = await msg.getChat();
         const sender = await msg.getContact();
-        const quotedMsg = await msg.getQuotedMessage();
+        let quotedMsg;
+              try {
+                  quotedMsg = await msg.getQuotedMessage();
+                  if (!quotedMsg) throw new Error('Quoted message not found');
+              } catch (err) {
+                  console.error('❌ Could not retrieve quoted message:', err.message);
+                  await msg.reply('⚠️ Unable to retrieve the quoted message. Please try again.');
+                  return;
+              }
 
         // Check if the message is from a group and the sender is an admin
         if (!chat.isGroup) {
@@ -202,9 +227,11 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
             return;
         }
 
-        const isAdmin = chat.participants.some(p => 
-            p.id._serialized === sender.id._serialized && p.isAdmin
-        );
+        const senderJid = getParticipantJid(sender);
+        const isAdmin = chat.participants.some(p => {
+            const pJid = getParticipantJid(p);
+            return pJid === senderJid && p.isAdmin;
+        });
 
         if (!isAdmin) {
             await msg.reply('🚫 You must be an admin to mute a user.');
@@ -229,13 +256,49 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
         }
 
         // Get the target user from the replied-to message
-        const target = quotedMsg.author || quotedMsg.from;
+        const target = getMessageAuthor(quotedMsg);
+        if (!target) {
+            await msg.reply('⚠️ Unable to identify the user to mute.');
+            return;
+        }
 
-        // Ensure the bot is an admin
-        const botIsAdmin = chat.participants.some(p =>
-            p.id.user === client.info.wid.user && p.isAdmin
-        );
-        if (!botIsAdmin) {
+        // Ensure the bot is an admin - find bot by checking isMe property
+        let botParticipant = null;
+        let botJid = null;
+        
+        // Method 1: Find participant with isMe property
+        for (const p of chat.participants) {
+            try {
+                const contact = await client.getContactById(getParticipantJid(p));
+                if (contact.isMe) {
+                    botParticipant = p;
+                    botJid = getParticipantJid(p);
+                    console.log(`[${getTimestamp()}] Found bot via isMe: ${botJid}`);
+                    break;
+                }
+            } catch (e) {
+                // Continue checking other participants
+            }
+        }
+        
+        // Method 2: If not found, try using client.info
+        if (!botParticipant && client.info && client.info.wid) {
+            const testJid = client.info.wid._serialized || client.info.wid;
+            botParticipant = chat.participants.find(p => {
+                const pJid = getParticipantJid(p);
+                return pJid === testJid || pJid === jidKey(testJid);
+            });
+            if (botParticipant) {
+                botJid = getParticipantJid(botParticipant);
+                console.log(`[${getTimestamp()}] Found bot via client.info: ${botJid}`);
+            }
+        }
+        
+        if (!botParticipant || !botParticipant.isAdmin) {
+            console.log(`[${getTimestamp()}] Bot admin check failed.`);
+            console.log(`[${getTimestamp()}] Bot found: ${botParticipant ? 'Yes' : 'No'}`);
+            console.log(`[${getTimestamp()}] Bot JID: ${botJid || 'Not found'}`);
+            console.log(`[${getTimestamp()}] Bot is admin: ${botParticipant ? botParticipant.isAdmin : 'N/A'}`);
             await msg.reply('⚠️ The bot must be an admin to mute users.');
             return;
         }
@@ -248,7 +311,14 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
         await addMutedUser(target, muteUntil);
 
         // Send confirmation message
-        await msg.reply(`🔇 @${target.split('@')[0]} 🔒 ⛔ ⏳`);
+        try {
+          await client.sendMessage(
+            msg.from,
+            `🔇 @${target.split('@')[0]} 🔒 ⛔ ⏳`
+          );
+        } catch (e) {
+          console.error('⚠️ Failed to send mute confirmation:', e.message);
+        }
 
         console.log(`✅ User @${target.split('@')[0]} muted for ${arg}`);
 
@@ -328,6 +398,122 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
     return;
 }
 
+// ───────────── #botkick COMMAND (Fixed for LID) ─────────────
+
+if (cmd === '#botkick') {
+  try {
+      const chat = await msg.getChat();
+      if (!chat.isGroup) {
+          await msg.reply('⚠️ This command can only be used in groups.');
+          return;
+      }
+
+      // Check if the user who sent the command is an admin
+      const sender = await msg.getContact();
+      const senderJid = getParticipantJid(sender);
+
+      const isAdmin = chat.participants.some(p => {
+          const pJid = getParticipantJid(p);
+          return pJid === senderJid && p.isAdmin;
+      });
+    
+      if (!isAdmin) {
+          await msg.reply('🚫 You must be an admin to execute this command.');
+          return;
+      }
+
+      // Check if bot is admin - find bot by checking isMe property
+      let botIsAdmin = false;
+      for (const p of chat.participants) {
+          try {
+              const contact = await client.getContactById(getParticipantJid(p));
+              if (contact.isMe && p.isAdmin) {
+                  botIsAdmin = true;
+                  break;
+              }
+          } catch (e) {
+              // Continue checking
+          }
+      }
+
+      if (!botIsAdmin) {
+          await msg.reply('⚠️ The bot must be an admin to kick users.');
+          return;
+      }
+
+      let kickedUsers = [];
+      for (const participant of chat.participants) {
+        const participantJid = getParticipantJid(participant);
+        if (!participantJid) continue;
+        
+        const contact = await client.getContactById(participantJid).catch(() => null);
+        const userLabel = describeContact(contact);
+
+        if (!await isBlacklisted(participantJid)) continue;
+
+        // don't kick other admins
+        if (participant.isAdmin) {
+          console.log(`[${getTimestamp()}] ⚠️ Cannot kick admin user: ${userLabel}`);
+          await client.sendMessage(
+            `${ALERT_PHONE}@c.us`,
+            `⚠️ Cannot kick blacklisted user ${userLabel}: user is an admin.`
+          );
+          continue;
+        }
+
+        try {
+          // remove them
+          await chat.removeParticipants([participantJid]);
+
+          // assume success if no exception
+          kickedUsers.push(userLabel);
+
+          // DM them the kick notice
+          const kickMessage = [
+            '🚫 הוסרת מהקבוצה מכיוון שמזהה המשתמש שלך מופיע ברשימה השחורה.',
+            '❗ אם אתה חושב שמדובר בטעות, נא לשלוח הודעת תגובה על הודעה זו.',
+            '🔓 המנהל יבדוק את בקשתך.'
+          ].join('\n');
+          await client.sendMessage(participantJid, kickMessage);
+
+          console.log(`[${getTimestamp()}] ✅ Kicked blacklisted user: ${userLabel}`);
+        } catch (err) {
+          console.error(`[${getTimestamp()}] ❌ Failed to kick ${userLabel}:`, err.message);
+          await client.sendMessage(
+            `${ALERT_PHONE}@c.us`,
+            `❌ Failed to kick blacklisted user ${userLabel}: ${err.message}`
+          );
+        }
+      }
+      
+
+      // Prepare and send the summary message to the ALERT_PHONE
+      const alertMessage = kickedUsers.length > 0
+          ? [
+              '🚨 *Spam Kick Report:*',
+              `✅ Removed ${kickedUsers.length} blacklisted users from group: ${chat.name}`,
+              `📌 Kicked Users:`,
+              ...kickedUsers.map(label => `- ${label}`)
+          ].join('\n')
+          : [
+              '🚨 *Spam Kick Report:*',
+              `✅ No blacklisted users found in the group: ${chat.name}`
+          ].join('\n');
+
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, alertMessage);
+      
+      // If users were kicked, send unblacklist info
+      if (kickedUsers.length > 0) {
+          await client.sendMessage(`${ALERT_PHONE}@c.us`, 
+              '🔄 To unblacklist any user, use the format:\n#unblacklist [number or JID]');
+      }
+
+  } catch (err) {
+      console.error('❌ Error executing #botkick:', err.message);
+      await msg.reply('🚫 Failed to complete the spam check.');
+  }
+  return;
+}
 
 
 
@@ -352,7 +538,7 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
       // Reply with the list of loaded commands
       await msg.reply(response);
     } catch (e) {
-      console.error('❌ Error fetching custom commands:', e);
+      console.error(`[${getTimestamp()}] ❌ Error fetching custom commands:`, e);
       await msg.reply('🚫 Failed to retrieve custom commands.');
     }
     return;
@@ -367,15 +553,15 @@ if (cleaned === '#help') {
       '📝 *Available Commands:*',
       '',
       '*🔧 Admin Commands:*',
-      '1. *#status* - Check bot status',
-      '2. *#reload* - Reload commands from Firestore',
-      '3. *#whitelist* - Add a number to the whitelist\n   (e.g., #whitelist 972555123456)',
-      '4. *#unwhitelist* - Remove a number from the whitelist\n   (e.g., #unwhitelist 972555123456)',
+      '1. *#status* - Check the current status of the bot',
+      '2. *#reload* - Reload all commands from Firestore',
+      '3. *#whitelist [number]* - Add a number to the whitelist\n   (e.g., #whitelist 972555123456)',
+      '4. *#unwhitelist [number]* - Remove a number from the whitelist\n   (e.g., #unwhitelist 972555123456)',
       '5. *#whitelst* - List all whitelisted numbers',
       '',
       '*🚫 Blacklist Commands:*',
-      '6. *#blacklist* - Manually add a number to the blacklist\n   (e.g., #blacklist 972555123456)',
-      '7. *#unblacklist* - Remove a number from the blacklist\n   (e.g., #unblacklist 972555123456)',
+      '6. *#blacklist [number]* - Manually add a number to the blacklist\n   (e.g., #blacklist 972555123456)',
+      '7. *#unblacklist [number]* - Remove a number from the blacklist\n   (e.g., #unblacklist 972555123456)',
       '8. *#blacklst* - List all blacklisted numbers',
       '',
       '*🚨 Group Management Commands:*',
@@ -383,14 +569,31 @@ if (cleaned === '#help') {
       '10. *#cf* - Check for foreign numbers in the group',
       '11. *#mute [minutes]* - Mute the entire group for the specified number of minutes\n    (admin only)',
       '12. *#mute (reply) [minutes]* - Mute a specific user for the specified number of minutes\n    (admin only), kicked out if they send more than 3 messages while muted',
+      '13. *#botkick* - Automatically kick out all blacklisted users from the current group',
+      '14. *#warn* - Send a warning to a user (reply to their message, admin only)',
+      '15. *#clear* - Delete all messages from a specific user (reply to their message, admin only)',
       '',
-      '*⚙️ General Commands:*',
-      '13. *#commands* - Show all loaded custom commands from Firestore',
-      '14. *#help* - Show this help message',
-      '15. *#unb* - Unban a previously banned number\n   (e.g., #unb 972555123456), must be as a reply on bot message',
+      '*👑 Super Admin Commands:*',
+      '16. *#promote* - Promote a user to admin (reply to their message, super admin only)',
+      '17. *#demote* - Demote an admin to regular user (reply to their message, super admin only)',
       '',
-      '💡 *Note:* Use these commands responsibly to manage group safety and user behavior.',
+      '*📢 Communication Commands:*',
+      '18. *#announce [message]* - Send an announcement to all group members (admin only)',
+      '19. *#pin [days]* - Pin a message (reply to message, default 7 days, admin only)',
+      '20. *#translate* - Translate a message to Hebrew (reply to message or provide text)',
+      '',
+      '*📊 Information Commands:*',
+      '21. *#stats* - Show group statistics (member count, admin count, etc.)',
+      '22. *#commands* - Display all loaded custom commands from Firestore',
+      '23. *#help* - Show this help message',
+      '',
+      '*🔄 Recovery Commands:*',
+      '24. *#unb [number]* - Unban a previously banned number\n    (e.g., #unb 972555123456), must be as a reply to a bot message',
+      '',
+      '💡 *Note:* Use these commands responsibly to ensure group safety and proper user behavior.',
+      '⚠️ *WhatsApp URLs:* When someone posts a WhatsApp group link, they are automatically kicked and blacklisted.',
     ];
+
     // Add dynamically loaded commands from Firestore
     const dynamicCommands = Object.keys(cachedCommands).map(cmd => `- ${cmd} - ${cachedCommands[cmd].description}`);
     const allCommands = builtInCommands.concat(dynamicCommands);
@@ -404,11 +607,12 @@ if (cleaned === '#help') {
     // Reply with the list of commands
     await msg.reply(response);
   } catch (e) {
-    console.error('❌ Error fetching commands:', e);
+    console.error(`[${getTimestamp()}] ❌ Error fetching commands:`, e);
     await msg.reply('🚫 Failed to retrieve the command list.');
   }
   return;
 }
+
 // Inside your unified message_create handler
 if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
   const uptimeMs = Date.now() - startTime;
@@ -440,7 +644,7 @@ if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
   ------------------------------------------------------------------ */
   if (msg.from === `${ALERT_PHONE}@c.us`) {
 
-      // ─── Manual “unb” via reply ───────────────────────────────
+      // ─── Manual "unb" via reply ───────────────────────────────
   if (msg.hasQuotedMsg && lowered === '#unb') {
     // 1) fetch the quoted message
     const quoted = await msg.getQuotedMessage();
@@ -483,16 +687,22 @@ if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
           ].join('\n'));
           return;
         }
-        if (await addToWhitelist(arg)) {
+        const targetJid = jidKey(arg);
+        if (!targetJid) {
+          await msg.reply('⚠️ Invalid identifier. Please supply a valid JID or phone number.');
+          return;
+        }
+
+        if (await addToWhitelist(targetJid)) {
           await msg.reply([
             '✅ Whitelist Update',
-            `👤 Number: +${arg}`,
+            `👤 ID: ${targetJid}`,
             '📝 Status: Added to whitelist'
           ].join('\n'));
         } else {
           await msg.reply([
             'ℹ️ Whitelist Info',
-            `👤 Number: +${arg}`,
+            `👤 ID: ${targetJid}`,
             '📝 Status: Already whitelisted'
           ].join('\n'));
         }
@@ -508,16 +718,22 @@ if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
           ].join('\n'));
           return;
         }
-        if (await removeFromWhitelist(arg)) {
+        const targetJidUW = jidKey(arg);
+        if (!targetJidUW) {
+          await msg.reply('⚠️ Invalid identifier. Please supply a valid JID or phone number.');
+          return;
+        }
+
+        if (await removeFromWhitelist(targetJidUW)) {
           await msg.reply([
             '✅ Whitelist Update',
-            `👤 Number: +${arg}`,
+            `👤 ID: ${targetJidUW}`,
             '📝 Status: Removed from whitelist'
           ].join('\n'));
         } else {
           await msg.reply([
             '⚠️ Whitelist Info',
-            `👤 Number: +${arg}`,
+            `👤 ID: ${targetJidUW}`,
             '🚫 Status: Not found in whitelist'
           ].join('\n'));
         }
@@ -542,17 +758,23 @@ if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
             ].join('\n'));
             return;
           }
-          if (await addToBlacklist(arg)) {
+          const targetJidBL = jidKey(arg);
+          if (!targetJidBL) {
+            await msg.reply('⚠️ Invalid identifier. Please supply a valid JID or phone number.');
+            return;
+          }
+
+          if (await addToBlacklist(targetJidBL)) {
             await msg.reply([
               '✅ Blacklist Update',
-              `👤 Number: +${arg}`,
+              `👤 ID: ${targetJidBL}`,
               '🚫 Status: Added to blacklist'
             ].join('\n'));
-            console.log(`✅ Manually blacklisted: +${arg}`);
+            console.log(`✅ Manually blacklisted: ${targetJidBL}`);
           } else {
             await msg.reply([
               'ℹ️ Blacklist Info',
-              `👤 Number: +${arg}`,
+              `👤 ID: ${targetJidBL}`,
               '🚫 Status: Already blacklisted'
             ].join('\n'));
           }
@@ -568,17 +790,23 @@ if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
               ].join('\n'));
               return;
             }
-            if (await removeFromBlacklist(arg)) {
+            const targetJidUBL = jidKey(arg);
+            if (!targetJidUBL) {
+              await msg.reply('⚠️ Invalid identifier. Please supply a valid JID or phone number.');
+              return;
+            }
+
+            if (await removeFromBlacklist(targetJidUBL)) {
               await msg.reply([
                 '✅ Blacklist Update',
-                `👤 Number: +${arg}`,
+                `👤 ID: ${targetJidUBL}`,
                 '📝 Status: Removed from blacklist'
               ].join('\n'));
-              console.log(`✅ Manually unblacklisted: +${arg}`);
+              console.log(`✅ Manually unblacklisted: ${targetJidUBL}`);
             } else {
               await msg.reply([
                 '⚠️ Blacklist Info',
-                `👤 Number: +${arg}`,
+                `👤 ID: ${targetJidUBL}`,
                 '🚫 Status: Not found in blacklist'
               ].join('\n'));
             }
@@ -614,9 +842,19 @@ if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
       await msg.reply('⛔ צריך לשלוח את הפקודה בתוך קבוצה.');
       return;
     }
-    const botIsAdmin = chat.participants.some(
-      p => p.id.user === client.info.wid.user && p.isAdmin
-    );
+    // Check if bot is admin - find bot by checking isMe property
+    let botIsAdmin = false;
+    for (const p of chat.participants) {
+        try {
+            const contact = await client.getContactById(getParticipantJid(p));
+            if (contact.isMe && p.isAdmin) {
+                botIsAdmin = true;
+                break;
+            }
+        } catch (e) {
+            // Continue checking
+        }
+    }
     if (!botIsAdmin) {
       await msg.reply('⚠️ הבוט לא אדמין בקבוצה הזו.');
       return;
@@ -624,7 +862,7 @@ if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
 
     const foreign = [];
     for (const p of chat.participants) {
-      const c = await client.getContactById(p.id._serialized).catch(() => null);
+      const c = await client.getContactById(getParticipantJid(p)).catch(() => null);
       if (c?.number && !c.number.startsWith('972')) {
         foreign.push(`• ${c.pushname || 'לא ידוע'} (${c.number})`);
       }
@@ -638,8 +876,7 @@ if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
   }
 
   /* ------------------------------------------------------------------
-     4) UPGRADED #kick (reply, from bot account)
-        – deletes recent msgs (≤100, ≤24 h) then kicks user
+     4) UPGRADED #kick (reply, from bot account) - Fixed for LID
   ------------------------------------------------------------------ */
 /* ─────── #kick – delete replied msg, kick user, DM admin with group URL ─────── */
 if (msg.fromMe && cmd === '#kick' && msg.hasQuotedMsg) {
@@ -647,14 +884,23 @@ if (msg.fromMe && cmd === '#kick' && msg.hasQuotedMsg) {
   const quoted = await msg.getQuotedMessage().catch(() => null);
   if (!chat?.isGroup || !quoted) return;
 
-  // 1) Determine the target JID
-  const target = quoted.author || quoted.from || quoted.id.participant;
+  // 1) Determine the target JID with LID support
+  const target = getMessageAuthor(quoted);
+  if (!target) {
+    console.log(`[${getTimestamp()}] ❌ Could not determine target user for kick`);
+    return;
+  }
 
   // 2) Delete only the replied-to message
   try { await quoted.delete(true); } catch { /* ignore */ }
 
   // 3) Kick the user
-  try { await chat.removeParticipants([target]); } catch { /* ignore */ }
+  try { 
+    await chat.removeParticipants([target]); 
+    console.log(`[${getTimestamp()}] ✅ Kicked user: ${target}`);
+  } catch (err) { 
+    console.error(`[${getTimestamp()}] ❌ Failed to kick user:`, err.message);
+  }
 
   // 4) Build Group URL
   const inviteCode = await chat.getInviteCode().catch(() => null);
@@ -665,7 +911,7 @@ if (msg.fromMe && cmd === '#kick' && msg.hasQuotedMsg) {
   // 5) Send alert *only* to ALERT_PHONE
   const alert = [
     '🚨 User Kicked',
-    `👤 Number: +${target.split('@')[0]}`,
+    `👤 Number: ${target}`,
     `📍 Group: ${chat.name}`,
     `🔗 Group URL: ${groupURL}`,
     '🗑️ Message Deleted: 1',
@@ -676,110 +922,418 @@ if (msg.fromMe && cmd === '#kick' && msg.hasQuotedMsg) {
   return;
 }
 
-});
+if (cmd === '#translate') {
+  let textToTranslate = '';
+  let targetContact = null;
+  let detectedLang = 'unknown';
 
-
-// ─── ADMIN REPLY-TO-KICK VIA message_create ─────────────────
-/*
-client.on('message_create', async msg => {
-  // 1) Only process commands typed by the bot account itself
-  if (!msg.fromMe) return;
-
-  // 2) Must be exactly "#kick" (case‐insensitive) and a reply
-  const text = msg.body.trim().toLowerCase();
-  if (text !== '#kick' || !msg.hasQuotedMsg) return;
-
-  // 3) Fetch the group and verify it's a real group
-  const chat = await msg.getChat().catch(() => null);
-  if (!chat?.isGroup) return;
-
-  // 4) Delete the quoted message
-  const quoted = await msg.getQuotedMessage().catch(() => null);
-  if (quoted) {
-    await quoted.delete(true).catch(() => {});
-    // 5) Kick the quoted user
-    const target = quoted.author || quoted.from;
-    await chat.removeParticipants([target]).catch(() => {});
-
-    // 6) Warn the group
-    // await chat.sendMessage(
-    //   `🛡️ מנגנון מניעת הונאות זיהה פעילות חשודה ⚠️ המשתמש הוסר ✅ הקהילה נשארת מוגנת 🔒`
-    // ).catch(() => {});
-
-    // 7) Send the full admin alert exactly as before
-    const alert = [
-      '🚨 user kicked out',
-      `👤 Number: +${target.split('@')[0]}`,
-      `📍 Group: ${chat.name}`,
-      '🔗 Posted link(s):',
-      `   • ${quoted.body}`,
-      '🚫 User was removed.'
-    ].join('\n');
-    await client.sendMessage(`${ALERT_PHONE}@c.us`, alert).catch(() => {});
+  // Try to get the quoted message if available
+  if (msg.hasQuotedMsg) {
+      try {
+          const quoted = await msg.getQuotedMessage();
+          textToTranslate = quoted.body;
+          targetContact = getMessageAuthor(quoted);
+      } catch (e) {
+          await msg.reply('⚠️ Could not retrieve the quoted message for translation.');
+          return;
+      }
+  } else {
+      textToTranslate = arg || msg.body.replace(/^#translate/i, '').trim();
+      targetContact = getMessageAuthor(msg);
   }
+
+  if (!textToTranslate) {
+      await msg.reply('⚠️ No text to translate.');
+      return;
+  }
+
+  try {
+      // Attempt to translate the text
+      const translationResult = await translate(textToTranslate, { to: 'he' });
+      const translatedText = translationResult.text || 'לא זוהה תרגום';
+
+      // Detect language
+      if (translationResult.from?.language?.iso) {
+          detectedLang = translationResult.from.language.iso;
+      } else if (translationResult.raw?.src) {
+          detectedLang = translationResult.raw.src;
+      }
+
+      // Only translate if not Hebrew, else still show result
+      if (detectedLang !== 'he') {
+          await msg.reply(
+              `🌍 תרגום מהמשתמש @${(targetContact || '').split('@')[0]} (מ${detectedLang}):\n${translatedText}`
+          );
+      } else {
+          await msg.reply(`🌍 הטקסט כבר בעברית:\n${translatedText}`);
+      }
+      console.log(`[${getTimestamp()}] ✅ Translated from ${detectedLang}: ${translatedText}`);
+  } catch (err) {
+      console.error('❌ Translation failed:', err.message);
+      await msg.reply('🚫 Translation error: Unable to process the message.');
+  }
+  return;
+}
+
+// ─────── #warn – Send warning to user (reply to message) ───────
+if (msg.hasQuotedMsg && cmd === '#warn') {
+    try {
+        const chat = await msg.getChat();
+        const sender = await msg.getContact();
+        
+        if (!chat.isGroup) {
+            await msg.reply('⚠️ This command can only be used in groups.');
+            return;
+        }
+        
+        const senderJid = getParticipantJid(sender);
+        const isAdmin = chat.participants.some(p => {
+            const pJid = getParticipantJid(p);
+            return pJid === senderJid && p.isAdmin;
+        });
+        
+        if (!isAdmin) {
+            await msg.reply('🚫 You must be an admin to warn users.');
+            return;
+        }
+        
+        const quotedMsg = await msg.getQuotedMessage();
+        const target = getMessageAuthor(quotedMsg);
+        
+        if (!target) {
+            await msg.reply('⚠️ Unable to identify the user to warn.');
+            return;
+        }
+        
+        const warningMessage = [
+            '⚠️ *WARNING*',
+            'Your behavior violates group rules. Please follow the group guidelines.',
+            'Further violations may result in mute or removal from the group.',
+            '------------------------------',
+            '⚠️ *אזהרה*',
+            'ההתנהגות שלך מפרה את כללי הקבוצה. אנא עקוב אחר ההנחיות.',
+            'הפרות נוספות עלולות לגרום להשתקה או הסרה מהקבוצה.'
+        ].join('\n');
+        
+        await client.sendMessage(target, warningMessage);
+        await msg.reply(`⚠️ Warning sent to @${target.split('@')[0]}`);
+        console.log(`[${getTimestamp()}] ⚠️ Warning sent to ${target}`);
+    } catch (err) {
+        console.error('❌ Warning error:', err.message);
+        await msg.reply('❌ Failed to send warning.');
+    }
+    return;
+}
+
+// ─────── #stats – Show group statistics ───────
+if (cmd === '#stats') {
+    try {
+        const chat = await msg.getChat();
+        if (!chat.isGroup) {
+            await msg.reply('⚠️ This command can only be used in groups.');
+            return;
+        }
+        
+        const totalMembers = chat.participants.length;
+        const adminCount = chat.participants.filter(p => p.isAdmin).length;
+        const regularMembers = totalMembers - adminCount;
+        
+        const stats = [
+            '📊 *Group Statistics*',
+            `👥 Total Members: ${totalMembers}`,
+            `👑 Admins: ${adminCount}`,
+            `👤 Regular Members: ${regularMembers}`,
+            `🏷️ Group Name: ${chat.name}`,
+            `🆔 Group ID: ${chat.id._serialized}`
+        ].join('\n');
+        
+        await msg.reply(stats);
+    } catch (err) {
+        console.error('❌ Stats error:', err.message);
+        await msg.reply('❌ Failed to get group statistics.');
+    }
+    return;
+}
+
+// ─────── #clear – Clear messages from a specific user (admin only) ───────
+if (msg.hasQuotedMsg && cmd === '#clear') {
+    try {
+        const chat = await msg.getChat();
+        const sender = await msg.getContact();
+        
+        if (!chat.isGroup) {
+            await msg.reply('⚠️ This command can only be used in groups.');
+            return;
+        }
+        
+        const senderJid = getParticipantJid(sender);
+        const isAdmin = chat.participants.some(p => {
+            const pJid = getParticipantJid(p);
+            return pJid === senderJid && p.isAdmin;
+        });
+        
+        if (!isAdmin) {
+            await msg.reply('🚫 You must be an admin to clear messages.');
+            return;
+        }
+        
+        const quotedMsg = await msg.getQuotedMessage();
+        const target = getMessageAuthor(quotedMsg);
+        
+        if (!target) {
+            await msg.reply('⚠️ Unable to identify the user.');
+            return;
+        }
+        
+        // Check if bot is admin first - find bot by checking isMe property
+        let botIsAdmin = false;
+        for (const p of chat.participants) {
+            try {
+                const contact = await client.getContactById(getParticipantJid(p));
+                if (contact.isMe && p.isAdmin) {
+                    botIsAdmin = true;
+                    break;
+                }
+            } catch (e) {
+                // Continue checking
+            }
+        }
+        
+        if (!botIsAdmin) {
+            await msg.reply('⚠️ The bot must be an admin to delete messages.');
+            return;
+        }
+        
+        // Get more messages and find last 10 from target user
+        await msg.reply('🔄 Searching for messages to delete...');
+        const messages = await chat.fetchMessages({ limit: 200 });
+        const targetMessages = [];
+        
+        // Collect messages from target user
+        for (const message of messages) {
+            if (getMessageAuthor(message) === target && targetMessages.length < 10) {
+                targetMessages.push(message);
+            }
+        }
+        
+        let deletedCount = 0;
+        let failedCount = 0;
+        
+        // Delete the messages
+        for (const message of targetMessages) {
+            try {
+                await message.delete(true);
+                deletedCount++;
+                // Small delay to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 100));
+            } catch (e) {
+                failedCount++;
+                console.error(`Failed to delete message: ${e.message}`);
+            }
+        }
+        
+        if (deletedCount > 0) {
+            await msg.reply(`🧹 Successfully deleted ${deletedCount} messages from @${target.split('@')[0]}${failedCount > 0 ? ` (${failedCount} failed)` : ''}`);
+            console.log(`[${getTimestamp()}] 🧹 Cleared ${deletedCount} messages from ${target}`);
+        } else {
+            await msg.reply(`⚠️ No messages found from @${target.split('@')[0]} in recent history.`);
+        }
+    } catch (err) {
+        console.error('❌ Clear error:', err.message);
+        await msg.reply('❌ Failed to clear messages.');
+    }
+    return;
+}
+
+// ─────── #promote – Promote user to admin (super admin only) ───────
+if (msg.hasQuotedMsg && cmd === '#promote') {
+    try {
+        const chat = await msg.getChat();
+        const sender = await msg.getContact();
+        
+        if (!chat.isGroup) {
+            await msg.reply('⚠️ This command can only be used in groups.');
+            return;
+        }
+        
+        // Only ADMIN_PHONE can promote
+        if (sender.number !== ADMIN_PHONE) {
+            await msg.reply('🚫 Only the super admin can promote users.');
+            return;
+        }
+        
+        const quotedMsg = await msg.getQuotedMessage();
+        const target = getMessageAuthor(quotedMsg);
+        
+        if (!target) {
+            await msg.reply('⚠️ Unable to identify the user to promote.');
+            return;
+        }
+        
+        await chat.promoteParticipants([target]);
+        await msg.reply(`✅ @${target.split('@')[0]} has been promoted to admin.`);
+        console.log(`[${getTimestamp()}] 👑 Promoted ${target} to admin`);
+    } catch (err) {
+        console.error('❌ Promote error:', err.message);
+        await msg.reply('❌ Failed to promote user.');
+    }
+    return;
+}
+
+// ─────── #demote – Demote admin to regular user (super admin only) ───────
+if (msg.hasQuotedMsg && cmd === '#demote') {
+    try {
+        const chat = await msg.getChat();
+        const sender = await msg.getContact();
+        
+        if (!chat.isGroup) {
+            await msg.reply('⚠️ This command can only be used in groups.');
+            return;
+        }
+        
+        // Only ADMIN_PHONE can demote
+        if (sender.number !== ADMIN_PHONE) {
+            await msg.reply('🚫 Only the super admin can demote users.');
+            return;
+        }
+        
+        const quotedMsg = await msg.getQuotedMessage();
+        const target = getMessageAuthor(quotedMsg);
+        
+        if (!target) {
+            await msg.reply('⚠️ Unable to identify the user to demote.');
+            return;
+        }
+        
+        await chat.demoteParticipants([target]);
+        await msg.reply(`✅ @${target.split('@')[0]} has been demoted from admin.`);
+        console.log(`[${getTimestamp()}] 👤 Demoted ${target} from admin`);
+    } catch (err) {
+        console.error('❌ Demote error:', err.message);
+        await msg.reply('❌ Failed to demote user.');
+    }
+    return;
+}
+
+// ─────── #announce – Send announcement to all members ───────
+if (cmd === '#announce') {
+    try {
+        const chat = await msg.getChat();
+        const sender = await msg.getContact();
+        
+        if (!chat.isGroup) {
+            await msg.reply('⚠️ This command can only be used in groups.');
+            return;
+        }
+        
+        const senderJid = getParticipantJid(sender);
+        const isAdmin = chat.participants.some(p => {
+            const pJid = getParticipantJid(p);
+            return pJid === senderJid && p.isAdmin;
+        });
+        
+        if (!isAdmin) {
+            await msg.reply('🚫 You must be an admin to send announcements.');
+            return;
+        }
+        
+        if (!arg) {
+            await msg.reply('⚠️ Please provide an announcement message.');
+            return;
+        }
+        
+        const announcement = [
+            '📢 *GROUP ANNOUNCEMENT*',
+            '━━━━━━━━━━━━━━━━━━━━━',
+            arg,
+            '━━━━━━━━━━━━━━━━━━━━━',
+            `From: @${sender.number}`
+        ].join('\n');
+        
+        await chat.sendMessage(announcement, { mentions: [sender] });
+        console.log(`[${getTimestamp()}] 📢 Announcement sent by ${sender.pushname}`);
+    } catch (err) {
+        console.error('❌ Announce error:', err.message);
+        await msg.reply('❌ Failed to send announcement.');
+    }
+    return;
+}
+
+// ─────── #pin – Pin message (admin only) ───────
+if (msg.hasQuotedMsg && cmd === '#pin') {
+    try {
+        const chat = await msg.getChat();
+        const sender = await msg.getContact();
+        
+        if (!chat.isGroup) {
+            await msg.reply('⚠️ This command can only be used in groups.');
+            return;
+        }
+        
+        const senderJid = getParticipantJid(sender);
+        const isAdmin = chat.participants.some(p => {
+            const pJid = getParticipantJid(p);
+            return pJid === senderJid && p.isAdmin;
+        });
+        
+        if (!isAdmin) {
+            await msg.reply('🚫 You must be an admin to pin messages.');
+            return;
+        }
+        
+        const quotedMsg = await msg.getQuotedMessage();
+        const duration = parseInt(arg) || 7; // Default 7 days
+        
+        await quotedMsg.pin(duration * 24 * 60 * 60); // Convert days to seconds
+        await msg.reply(`📌 Message pinned for ${duration} days.`);
+        console.log(`[${getTimestamp()}] 📌 Message pinned for ${duration} days`);
+    } catch (err) {
+        console.error('❌ Pin error:', err.message);
+        await msg.reply('❌ Failed to pin message.');
+    }
+    return;
+}
+
 });
 
-*/
 
-/* ───────────── INVITE-LINK MODERATION ───────────── */
+/* ───────────── INVITE-LINK MODERATION (Fixed for LID) ───────────── */
 client.on('message', async msg => {
-  if (msg.fromMe) return;                         // skip self-echo
+  if (msg.fromMe) return;        
+  
+   // Ignore messages sent before the bot was started
+   const messageTimestamp = msg.timestamp * 1000; // Convert from seconds to milliseconds
+   if (messageTimestamp < startTime) {
+     console.log(`[${getTimestamp()}] ⏳ Ignored old message from ${msg.from}`);
+     return;
+   }
+   // skip self-echo
   const chat    = await msg.getChat().catch(() => null);
   const contact = await msg.getContact().catch(() => null);
   if (!chat?.isGroup || !contact) return;
 
-  // DO NOT DELETE THIS CODE, TRANSLATEIO< JUST UNCOMMENT IT
-  /*
-  try {
-    // Attempt to translate the message
-    const translationResult = await translate(msg.body, { to: 'he' });
-
-    // Extract translated text
-    const translatedText = translationResult.text || 'לא זוהה תרגום';
-
-    // Extract detected language in a more flexible way
-    let detectedLanguage = 'unknown';
-
-    // Try to find the detected language from the structured response
-    if (translationResult.from?.language?.iso) {
-      detectedLanguage = translationResult.from.language.iso;
-    } else if (translationResult.raw?.src) {
-      detectedLanguage = translationResult.raw.src;
-    }
-
-    // Only translate if the detected language is not Hebrew
-    if (detectedLanguage !== 'he') {
-      await chat.sendMessage(
-        `🌍 תרגום מהמשתמש @${contact.number} (מ${detectedLanguage}):\n${translatedText}`
-      );
-      console.log(`✅ Translated user message from ${detectedLanguage} to Hebrew: ${translatedText}`);
-    }
-  } catch (err) {
-    console.error('❌ Translation failed:', err.message);
-    await chat.sendMessage('🚫 Translation error: Unable to process the message.');
-  }
-    */
-  
-  const muteUntil = mutedUsers.get(msg.author);
+  // Check if user is muted
+  const author = getMessageAuthor(msg);
+  const muteUntil = mutedUsers.get(author);
   if (muteUntil && Date.now() < muteUntil) {
     // 1) Count this infraction
-    const count = (mutedMsgCounts.get(msg.author) || 0) + 1;
-    mutedMsgCounts.set(msg.author, count);
+    const count = (mutedMsgCounts.get(author) || 0) + 1;
+    mutedMsgCounts.set(author, count);
 
-    // 2) If over 5 messages while muted → kick
+    // 2) If over 3 messages while muted → kick
     if (count > 3) {
       try {
-        await chat.removeParticipants([ msg.author ]);
+        await chat.removeParticipants([author]);
         await chat.sendMessage(
-          `🚨 המשתמש @${msg.author.split('@')[0]} הורחק בשל הפרת כללי הקבוצה.`
+          `🚨 המשתמש @${author.split('@')[0]} הורחק בשל הפרת כללי הקבוצה.`
         );
-        console.log(`✅ Kicked @${msg.author.split('@')[0]} after ${count} muted messages.`);
+        console.log(`[${getTimestamp()}] ✅ Kicked @${author.split('@')[0]} after ${count} muted messages.`);
       } catch (e) {
-        console.error('❌ Failed to kick user:', e.message);
+        console.error(`[${getTimestamp()}] ❌ Failed to kick user:`, e.message);
       }
       // clean up their state
-      mutedUsers.delete(msg.author);
-      mutedMsgCounts.delete(msg.author);
+      mutedUsers.delete(author);
+      mutedMsgCounts.delete(author);
       return;
     }
 
@@ -787,74 +1341,147 @@ client.on('message', async msg => {
     try {
       await msg.delete(true);
       console.log(
-        `🗑️ Shadow-deleted message #${count} from @${msg.author.split('@')[0]} (still muted)`
+        `🗑️ Shadow-deleted message #${count} from @${author.split('@')[0]} (still muted)`
       );
     } catch (err) {
-      console.error('❌ Failed to delete message:', err.message);
+      console.error(`[${getTimestamp()}] ❌ Failed to delete message:`, err.message);
     }
     return;
   }
 
-
-
-
   
   const body        = msg.body.replace(/\u200e/g, '').trim(); // keep original case!
-  const inviteRegex = /https?:\/\/chat\.whatsapp\.com\/[A-Za-z0-9]{10,}/g;
+  // Updated regex to catch more WhatsApp URL variations
+  const inviteRegex = /https?:\/\/(chat\.)?whatsapp\.com\/(chat\/)?([A-Za-z0-9]{10,})/gi;
   const matches     = body.match(inviteRegex) || [];
-  if (!matches.length) return;
-
-  const senderIsAdmin = chat.participants.some(
-    p => p.id.user === contact.id.user && p.isAdmin
-  );
-  if (senderIsAdmin || WHITELIST.has(contact.number)) return;
-
-  const botIsAdmin = chat.participants.some(
-    p => p.id.user === client.info.wid.user && p.isAdmin
-  );
-  if (!botIsAdmin) return;
-
-  await chat.sendSeen().catch(() => {});
-  await msg.delete(true).catch(e => console.error('❌ Delete failed:', e.message));
-  const warnInGroup = `🛡️ מנגנון מניעת הונאות זיהה פעילות חשודה ⚠️ המשתמש הוסר ✅ הקהילה נשארת מוגנת 🔒`;
-  //await chat.sendMessage(warnInGroup).catch(() => {});
-
-  try {
-    // 📝 Normalize phone number by removing '+'
-    const phoneNumber = contact.number.startsWith('+') ? contact.number.slice(1) : contact.number;
-
-    // ✅ Check if the number starts with 972
-    if (phoneNumber.startsWith('972') || contact.number.startsWith('+972')) {
-      //prevent duplicates
-      if (await isBlacklisted(contact.number)) {
-        console.log(`🚫 User @${contact.number} is already blacklisted.`);
-        return;
-       }
-
-        await addToBlacklist(phoneNumber);  // 🔥 Add to blacklist
-        console.log(`🚫 User @${phoneNumber} added to blacklist for posting invite link.`);
-    }
-  } catch (err) {
-    console.error('❌ Failed to add to blacklist:', err.message);
+  
+  // Debug logging
+  if (body.toLowerCase().includes('whatsapp.com')) {
+    console.log(`[${getTimestamp()}] 🔍 Detected potential WhatsApp link in message from ${msg.from}`);
+    console.log(`[${getTimestamp()}] Message body: ${body}`);
+    console.log(`[${getTimestamp()}] Matches found: ${matches.length}`);
   }
   
-  await chat.removeParticipants([contact.id._serialized])
-            .catch(e => console.error('❌ Kick failed:', e.message));
+  if (!matches.length) return;
+  
+  // Extract group codes from URLs
+  const groupCodes = [];
+  let match;
+  while ((match = inviteRegex.exec(body)) !== null) {
+    // Extract the group code (last captured group)
+    const groupCode = match[3] || match[2] || match[1];
+    if (groupCode && groupCode.length >= 10) {
+      groupCodes.push(groupCode);
+    }
+  }
 
-  const alert = [
-    '🚨 WhatsApp Invite Detected',
-    `👤 Number: +${contact.number}`,
-    contact.pushname ? `👤 Name: ${contact.pushname}` : '',
-    `📍 Group: ${chat.name}`,
-    '🔗 Posted link(s):',
-    ...matches.map(l => `   • ${l}`),
-    '🚫 User was removed.'
-  ].filter(Boolean).join('\n');
-  client.sendMessage(`${ALERT_PHONE}@c.us`, alert).catch(() => {});
-  console.log(`✅ Invite handled & alert sent for ${contact.number}`);
+  const contactJid = jidKey(contact);
+  const senderIsAdmin = chat.participants.some(p => {
+    const pJid = getParticipantJid(p);
+    return pJid === contactJid && p.isAdmin;
+  });
+  
+  console.log(`[${getTimestamp()}] 🔗 WhatsApp invite detected from ${contactJid}`);
+  console.log(`[${getTimestamp()}] Sender is admin: ${senderIsAdmin}`);
+  console.log(`[${getTimestamp()}] Sender is whitelisted: ${WHITELIST.has(contactJid)}`);
+  
+  if (senderIsAdmin || WHITELIST.has(contactJid)) {
+    console.log(`[${getTimestamp()}] ℹ️ Skipping action - sender is admin or whitelisted`);
+    return;
+  }
+
+  // Check if bot is admin - find bot by checking isMe property
+  let botIsAdmin = false;
+  for (const p of chat.participants) {
+      try {
+          const contact = await client.getContactById(getParticipantJid(p));
+          if (contact.isMe && p.isAdmin) {
+              botIsAdmin = true;
+              break;
+          }
+      } catch (e) {
+          // Continue checking
+      }
+  }
+  
+  if (!botIsAdmin) {
+    console.log(`[${getTimestamp()}] ⚠️ Bot is not admin - cannot take action on invite link`);
+    return;
+  }
+  
+  console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with invite link moderation`); 
+
+  await chat.sendSeen().catch(() => {});
+  
+  const target = author || contactJid;
+
+// 1) Delete the invite message
+try {
+  console.log(`[${getTimestamp()}] Attempting to delete invite message...`);
+  await msg.delete(true);
+  console.log(`[${getTimestamp()}] 🗑️ Invite message deleted successfully`);
+} catch (e) {
+  console.error(`[${getTimestamp()}] ❌ Failed to delete invite message:`, e.message);
+  console.error(`[${getTimestamp()}] Error details:`, e);
+}
+
+// 2) Blacklist the sender AND the group codes (if not already)
+try {
+  const userJid = jidKey(contact);
+  if (!(await isBlacklisted(userJid))) {
+    await addToBlacklist(userJid);
+    console.log(`✅ User ${userJid} added to blacklist`);
+  } else {
+    console.log(`🚫 User ${userJid} is already blacklisted.`);
+  }
+  
+  // Also blacklist each group code as potential LID
+  for (const code of groupCodes) {
+    const groupLid = `${code}@lid`;
+    if (!(await isBlacklisted(groupLid))) {
+      await addToBlacklist(groupLid);
+      console.log(`✅ Group LID ${groupLid} added to blacklist`);
+    }
+  }
+} catch (err) {
+  console.error(`[${getTimestamp()}] ❌ Failed to add to blacklist:`, err.message);
+}
+
+// 3) Remove (kick) the sender from group
+try {
+  await chat.removeParticipants([target]);
+  console.log(`[${getTimestamp()}] ✅ Kicked user: ${target}`);
+} catch (e) {
+  console.error(`[${getTimestamp()}] ❌ Kick failed:`, e.message);
+}
+
+// 4) Build and send rich alert with group URL
+const inviteCode = await chat.getInviteCode().catch(() => null);
+const groupURL = inviteCode
+  ? `https://chat.whatsapp.com/${inviteCode}`
+  : '[URL unavailable]';
+
+const alert = [
+  '🚨 *WhatsApp Invite Detected & User Kicked*',
+  `👤 User: ${describeContact(contact)}`,
+  `📍 Group: ${chat.name}`,
+  `🔗 Group URL: ${groupURL}`,
+  '🔗 Posted link(s):',
+  ...matches.map(l => `   • ${l}`),
+  '🗑️ Message Deleted: 1',
+  '🚫 User was removed and blacklisted.',
+  '',
+  '🔄 *To unblacklist this user, copy the command below:*'
+].filter(Boolean).join('\n');
+
+await client.sendMessage(`${ALERT_PHONE}@c.us`, alert).catch(() => {});
+
+// Send unblacklist command as separate message for easy copying
+await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${jidKey(contact)}`).catch(() => {});
+console.log(`[${getTimestamp()}] ✅ Invite handled, message deleted & user kicked for ${describeContact(contact)}`);
 });
 
-/* ───────────── FOREIGN-JOIN RULE (prefix +1 or +6) ───────────── */
+/* ───────────── FOREIGN-JOIN RULE (Fixed for LID) ───────────── */
 client.on('group_join', async evt => {
   const pid = evt.id?.participant;
   if (!pid) return;
@@ -864,101 +1491,54 @@ client.on('group_join', async evt => {
   if (!chat?.isGroup) return;
 
   const contact = await client.getContactById(pid).catch(() => null);
-  if (!contact?.number) return;
+  if (!contact) return;
 
-  if (await isBlacklisted(contact.number)) {
-    console.log(`🚫 User @${contact.number} is already blacklisted.`);
+  const userJid = jidKey(contact);
 
-
-    // Kick the blacklisted user
-    try {
-      await chat.removeParticipants([pid]);
-
-      // Get group invite link
-      const inviteCode = await chat.getInviteCode().catch(() => null);
-      const groupURL = inviteCode
-        ? `https://chat.whatsapp.com/${inviteCode}`
-        : '[URL unavailable]';
-
-      // Send message to the kicked user
-      const messageToUser = [
-        '🚫 הוסרת מהקבוצה מכיוון שמספרך נמצא ברשימה השחורה.',
-        '❗ אם אתה חושב שמדובר בטעות, צור קשר עם המנהל כאן:',
-        `📱 +${ADMIN_PHONE}`,
-        '------------------------------',
-        '🚫 You have been removed from the group because your number is on the blacklist.',
-        '❗ If you think this was a mistake, please contact the admin here:',
-        `📱 +${ADMIN_PHONE}`,
-        '------------------------------',
-        '🚫 Вы были удалены из группы, так как ваш номер находится в черном списке.',
-        '❗ Если вы считаете, что это ошибка, пожалуйста, свяжитесь с администратором здесь:',
-        `📱 +${ADMIN_PHONE}`,
-        '------------------------------'
-    ].join('\n');
+  if (await isBlacklisted(userJid)) {
+    console.log(`🚫 User ${userJid} is blacklisted, attempting to remove...`);
     
+    try {
+      // Remove the blacklisted user
+      await chat.removeParticipants([pid]);
+      
+      // Notify the kicked user
+      const messageToUser = [
+        '🚫 הוסרת מהקבוצה מכיוון שמזהה המשתמש שלך מופיע ברשימה השחורה.',
+        '❗ אם אתה חושב שמדובר בטעות, נא ליצור קשר עם מנהל הקבוצה.',
+        `📱 +${ADMIN_PHONE}`
+      ].join('\n');
       await client.sendMessage(pid, messageToUser);
-
-      // Notify the admin about the blacklist kick
+      
+      // Get group URL for alert
+      const inviteCode = await chat.getInviteCode().catch(() => null);
+      const groupURL = inviteCode ? `https://chat.whatsapp.com/${inviteCode}` : '[URL unavailable]';
+      
+      // Alert the admin with enhanced info
       const alert = [
-        '🚨 *Blacklisted User Attempted to Join*',
-        `👤 Number: +${contact.number}`,
+        '🚨 *Blacklisted User Auto-Kicked on Join*',
+        `👤 User: ${describeContact(contact)}`,
         `📍 Group: ${chat.name}`,
         `🔗 Group URL: ${groupURL}`,
-        '🚫 User was auto-removed (blacklisted).'
+        `🕒 Time: ${getTimestamp()}`,
+        '🚫 User was auto-removed (blacklisted).',
+        '',
+        '🔄 *To unblacklist this user, copy the command below:*'
       ].join('\n');
       await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
-
-      // Notify the alert phone that the blacklisted user was kicked
-const alertMessage = [
-    '🚨 *User Kicked - Blacklisted*',
-    `👤 Number: +${contact.number}`,
-    `📍 Group: ${chat.name}`,
-    `🔗 Group URL: ${groupURL}`,
-    '🚫 User was kicked because they are on the blacklist.'
-].join('\n');
-
-await client.sendMessage(`${ALERT_PHONE}@c.us`, alertMessage);
-console.log(`✅ Alert sent to admin: Blacklisted user @${contact.number} was kicked from group: ${chat.name}`);
-
+      
+      // Send unblacklist command as separate message for easy copying
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${userJid}`);
+      console.log(`[${getTimestamp()}] ✅ Auto-kicked blacklisted user: ${userJid}`);
     } catch (err) {
-      console.log(`❌ Failed to auto-kick blacklisted user: ${err.message}`);
+      console.error(`❌ Failed to auto-kick blacklisted user: ${err.message}`);
+      // Alert admin about failure
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, 
+        `❌ Failed to auto-kick blacklisted user ${describeContact(contact)} from ${chat.name}: ${err.message}`);
     }
     return;
   }
-
-  // Only kick numbers that start with +1 or +6 and are NOT whitelisted
-  if ((contact.number.startsWith('1') || contact.number.startsWith('6')) && 
-      !(await isWhitelisted(contact.number))) {
-    try {
-      // Remove the participant
-      await chat.removeParticipants([pid]);
-
-      // Notify the kicked user
-      const messageToUser = [
-        '🚫 You have been removed from the group because your number is considered suspicious.',
-        '❗ If this is a mistake, please contact the group admin:',
-        `📱 +${ADMIN_PHONE}`
-      ].join('\n');
-      await client.sendMessage(`${pid}`, messageToUser);
-
-      // Alert the admin
-      const alert = [
-        '🚨 Non-Whitelisted Member Auto-Kicked',
-        `👤 Number: +${contact.number}`,
-        `📍 Group: ${chat.name}`,
-        '🚫 User was auto-removed (not whitelisted).'
-      ].join('\n');
-      await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
-      console.log(`✅ Auto-kicked non-whitelisted user: +${contact.number}`);
-    } catch (err) {
-      console.log(`❌ Failed to auto-kick: ${err.message}`);
-    }
-  } else {
-    console.log(`✅ Allowed to join: +${contact.number}`);
-  }
 });
-
-  // 🛑 Check if the user is blacklisted
 
 
 
@@ -998,5 +1578,5 @@ client.on('loading_screen', pct => console.log(`🔄 Loading screen: ${pct}%`));
 client.on('change_state', st => console.log('🧭 State changed to:', st));
 
 /* ───────────── START BOT ───────────── */
-console.log('📡 Calling client.initialize()…');
+console.log(`[${getTimestamp()}] 📡 Calling client.initialize()…`);
 client.initialize();

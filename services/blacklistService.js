@@ -1,17 +1,20 @@
 const db = require('../firebaseConfig');
+const { jidKey } = require('../utils/jidUtils');
 
-async function addToBlacklist(phoneNumber) {
-    phoneNumber = phoneNumber.startsWith('+') ? phoneNumber.slice(1) : phoneNumber;
-    
-    const docRef = db.collection('blacklist').doc(phoneNumber);
+async function addToBlacklist(identifier) {
+    const jid = jidKey(identifier);
+    if (!jid) return false;
+    const docRef = db.collection('blacklist').doc(jid);
     const doc = await docRef.get();
     if (doc.exists) return false;
-    await docRef.set({ phone: phoneNumber });
+    await docRef.set({ jid });
     return true;
 }
 
-async function removeFromBlacklist(phoneNumber) {
-    const docRef = db.collection('blacklist').doc(phoneNumber);
+async function removeFromBlacklist(identifier) {
+    const jid = jidKey(identifier);
+    if (!jid) return false;
+    const docRef = db.collection('blacklist').doc(jid);
     const doc = await docRef.get();
     if (!doc.exists) return false;
     await docRef.delete();
@@ -23,10 +26,22 @@ async function listBlacklist() {
     return snapshot.docs.map(doc => doc.id);
 }
 
-async function isBlacklisted(phoneNumber) {
-    const docRef = db.collection('blacklist').doc(phoneNumber);
+async function isBlacklisted(identifier) {
+    const jid = jidKey(identifier);
+    if (!jid) return false;
+    const docRef = db.collection('blacklist').doc(jid);
     const doc = await docRef.get();
-    return doc.exists;
+
+    if (doc.exists) return true;
+
+    // 🔙 Legacy support: some entries were stored as raw phone numbers (no @c.us)
+    const legacyId = jid.includes('@') ? jid.split('@')[0] : jid;
+    if (legacyId !== jid) {
+        const legacyDoc = await db.collection('blacklist').doc(legacyId).get();
+        return legacyDoc.exists;
+    }
+
+    return false;
 }
 
 module.exports = { addToBlacklist, removeFromBlacklist, listBlacklist, isBlacklisted };

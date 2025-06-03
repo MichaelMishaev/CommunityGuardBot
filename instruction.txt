@@ -1,0 +1,59 @@
+transfer one file:
+new bot (guard1) inly inviteMonitor copy:
+scp -i ~/.ssh/id_ed25519 D:/WebApps/BotCommunityGuard/inviteMonitor.js ec2-user@44.204.100.194:~/guard1/
+
+
+scp -i /d/WebApps/BotCommunityGuard/communityGuardKey.pem     /d/WebApps/BotCommunityGuard/inviteMonitor.js     ec2-user@44.213.149.11:~/BotCommunityGuard/inviteMonitor.js
+
+
+
+
+🛠️ CommunityGuard Bot – How to Connect and Update (Step-by-Step)
+
+1. Open Git Bash on my local computer
+
+   cd /d/WebApps
+
+2. Connect to the EC2 server
+
+   ssh -i communityGuardKey.pem ec2-user@54.235.58.231
+
+3. Go to the bot folder
+
+   cd BotCommunityGuard
+
+4. (Optional) Before uploading new code, I can delete the old one if needed:
+   
+   rm -rf BotCommunityGuard
+
+5. From my local machine – upload the updated code (run this in Git Bash, not in EC2):
+
+   scp -i communityGuardKey.pem -r ./BotCommunityGuard ec2-user@54.235.58.231:/home/ec2-user
+
+6. Back on EC2, re-enter the folder
+
+   cd BotCommunityGuard
+
+7. Install dependencies (only if package.json changed)
+
+   npm install
+
+8. Restart the bot with PM2
+
+   pm2 restart inviteMonitor
+
+9. (Optional) View status or logs:
+
+   pm2 list
+   pm2 logs inviteMonitor
+
+✅ That’s it – the updated bot is now running in the background and will survive reboots.
+
+
+
+
+move InviteMonitor file to aws:
+
+scp -i /d/WebApps/BotCommunityGuard/communityGuardKey.pem \
+    /d/WebApps/BotCommunityGuard/inviteMonitor.js \
+    ec2-user@44.213.149.11:~/BotCommunityGuard/inviteMonitor.js

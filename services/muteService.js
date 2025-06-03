@@ -1,9 +1,12 @@
 const db = require('../firebaseConfig');
+const { jidKey } = require('../utils/jidUtils');
 
 async function addMutedUser(userId, muteUntil) {
     try {
-        await db.collection('muted_users').doc(userId).set({ muteUntil });
-        console.log(`✅ Muted user ${userId} until ${new Date(muteUntil).toLocaleString()}`);
+        const jid = jidKey(userId);
+        if (!jid) return false;
+        await db.collection('muted_users').doc(jid).set({ muteUntil });
+        console.log(`✅ Muted user ${jid} until ${new Date(muteUntil).toLocaleString()}`);
         return true;
     } catch (error) {
         console.error('❌ Error saving muted user:', error);
@@ -13,8 +16,10 @@ async function addMutedUser(userId, muteUntil) {
 
 async function removeMutedUser(userId) {
     try {
-        await db.collection('muted_users').doc(userId).delete();
-        console.log(`✅ Unmuted user ${userId}`);
+        const jid = jidKey(userId);
+        if (!jid) return false;
+        await db.collection('muted_users').doc(jid).delete();
+        console.log(`✅ Unmuted user ${jid}`);
         return true;
     } catch (error) {
         console.error('❌ Error removing muted user:', error);
