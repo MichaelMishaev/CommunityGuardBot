@@ -121,45 +121,12 @@ async function processUserMessages(userId, chatId) {
         }
       }
       
-      // Kick user with validation
+      // Kick user (same method as #kick command)
       try {
-        console.log(`[${getTimestamp()}] 🎯 Attempting to kick user: ${userId}`);
-        
-        // Validate user JID format
-        if (!userId || typeof userId !== 'string' || userId.trim() === '') {
-          throw new Error(`Invalid userId format: ${userId}`);
-        }
-        
-        // Check if user is still in the group
-        const currentParticipants = chat.participants.map(p => getParticipantJid(p));
-        const isUserInGroup = currentParticipants.includes(userId);
-        
-        console.log(`[${getTimestamp()}] 👥 User ${userId} is in group: ${isUserInGroup}`);
-        console.log(`[${getTimestamp()}] 👥 Current participants count: ${currentParticipants.length}`);
-        
-        if (!isUserInGroup) {
-          console.log(`[${getTimestamp()}] ⚠️ User ${userId} is no longer in the group, skipping kick`);
-        } else {
-          await chat.removeParticipants([userId]);
-          console.log(`[${getTimestamp()}] ✅ Kicked user: ${userId}`);
-        }
-      } catch (e) {
-        console.error(`[${getTimestamp()}] ❌ Failed to kick user ${userId}: ${e.message}`);
-        console.error(`[${getTimestamp()}] ❌ Full error:`, e);
-        
-        // Try alternative kick method
-        try {
-          console.log(`[${getTimestamp()}] 🔄 Trying alternative kick method for ${userId}`);
-          const participant = chat.participants.find(p => getParticipantJid(p) === userId);
-          if (participant) {
-            await chat.removeParticipants([participant.id._serialized]);
-            console.log(`[${getTimestamp()}] ✅ Alternative kick successful for ${userId}`);
-          } else {
-            console.log(`[${getTimestamp()}] ⚠️ User ${userId} not found in participants for alternative kick`);
-          }
-        } catch (altError) {
-          console.error(`[${getTimestamp()}] ❌ Alternative kick also failed: ${altError.message}`);
-        }
+        await chat.removeParticipants([userId]);
+        console.log(`[${getTimestamp()}] ✅ Kicked user: ${userId}`);
+      } catch (err) {
+        console.error(`[${getTimestamp()}] ❌ Failed to kick user:`, err.message);
       }
       
       // Send single alert to admin
@@ -327,7 +294,7 @@ client.on('ready', async () => {
    mutedUsers = await loadMutedUsers();
    console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.1.0 - Queue system, #ban command, improved #clear`);
+   console.log(`[${getTimestamp()}] Version 1.2.0 - Fixed rapid invite link processing, improved kick validation`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
