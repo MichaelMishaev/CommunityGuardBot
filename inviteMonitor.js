@@ -1943,6 +1943,8 @@ client.on('message', async msg => {
   // Debug logging
   if (body.toLowerCase().includes('whatsapp.com')) {
     console.log(`[${getTimestamp()}] 🔍 Detected potential WhatsApp link in message from ${msg.from}`);
+    console.log(`[${getTimestamp()}] 📧 Message sender (contact): ${contactJid}`);
+    console.log(`[${getTimestamp()}] 👤 Message author (getMessageAuthor): ${author}`);
     console.log(`[${getTimestamp()}] Message body: ${body}`);
     console.log(`[${getTimestamp()}] Matches found: ${matches.length}`);
   }
@@ -2016,7 +2018,10 @@ client.on('message', async msg => {
   
   console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with invite link moderation`); 
 
-  const target = author || contactJid;
+  // Use contactJid as the target (the actual sender of this specific message)
+  const target = contactJid;
+  
+  console.log(`[${getTimestamp()}] 🎯 Target user for processing: ${target}`);
   
   // IMMEDIATE deletion of invite link message - don't wait for queue
   try {
