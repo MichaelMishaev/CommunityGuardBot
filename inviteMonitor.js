@@ -297,7 +297,7 @@ client.on('ready', async () => {
    mutedUsers = await loadMutedUsers();
    console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.3.0 - IMMEDIATE KICK - NO QUEUE! Bypassed queue system entirely`);
+   console.log(`[${getTimestamp()}] Version 1.3.1 - FIXED LID KICK BUG! Use author (LID) for kick, contactJid for blacklist`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
@@ -2044,28 +2044,43 @@ client.on('message', async msg => {
   
   console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with invite link moderation`); 
 
-  // Use contactJid as the target (the actual sender of this specific message)
-  const target = contactJid;
+  // Use the ACTUAL MESSAGE AUTHOR (LID format) for kick, contactJid for blacklist
+  const kickTarget = author;  // This is the LID format that exists in group participants
+  const blacklistTarget = contactJid;  // This is for blacklist (both formats should be blacklisted)
   
-  console.log(`[${getTimestamp()}] 🎯 Target user for processing: ${target}`);
+  console.log(`[${getTimestamp()}] 🎯 Kick target (author): ${kickTarget}`);
+  console.log(`[${getTimestamp()}] 🎯 Blacklist target (contactJid): ${blacklistTarget}`);
+  
+  // Validate that we have a valid kick target before proceeding
+  if (!kickTarget) {
+    console.error(`[${getTimestamp()}] ❌ No valid kick target found, aborting`);
+    return;
+  }
   
   // ============= IMMEDIATE KICK - NO QUEUE! =============
   console.log(`[${getTimestamp()}] 🚨 IMMEDIATE PROCESSING - NO QUEUE!`);
   
   // 1) Delete invite message immediately
   try {
-    console.log(`[${getTimestamp()}] 🗑️ Deleting invite message from ${target}...`);
+    console.log(`[${getTimestamp()}] 🗑️ Deleting invite message...`);
     await msg.delete(true);
     console.log(`[${getTimestamp()}] ✅ Invite message deleted`);
   } catch (e) {
     console.error(`[${getTimestamp()}] ❌ Failed to delete invite message: ${e.message}`);
   }
   
-  // 2) Blacklist user immediately
+  // 2) Blacklist user immediately (both formats)
   try {
-    if (!(await isBlacklisted(target))) {
-      await addToBlacklist(target);
-      console.log(`[${getTimestamp()}] ✅ User ${target} added to blacklist`);
+    // Blacklist the contact JID (legacy format)
+    if (!(await isBlacklisted(blacklistTarget))) {
+      await addToBlacklist(blacklistTarget);
+      console.log(`[${getTimestamp()}] ✅ User ${blacklistTarget} added to blacklist`);
+    }
+    
+    // Also blacklist the LID format if different
+    if (kickTarget !== blacklistTarget && !(await isBlacklisted(kickTarget))) {
+      await addToBlacklist(kickTarget);
+      console.log(`[${getTimestamp()}] ✅ User ${kickTarget} added to blacklist`);
     }
     
     // Also blacklist group codes from invite links
@@ -2080,13 +2095,13 @@ client.on('message', async msg => {
     console.error(`[${getTimestamp()}] ❌ Failed to blacklist: ${e.message}`);
   }
   
-  // 3) KICK USER IMMEDIATELY (same method as #kick command)
+  // 3) KICK USER IMMEDIATELY - Use the LID format that exists in participants
   try {
-    console.log(`[${getTimestamp()}] 🚨 KICKING USER IMMEDIATELY: ${target}`);
-    await chat.removeParticipants([target]);
-    console.log(`[${getTimestamp()}] ✅ KICKED USER: ${target}`);
+    console.log(`[${getTimestamp()}] 🚨 KICKING USER IMMEDIATELY: ${kickTarget}`);
+    await chat.removeParticipants([kickTarget]);
+    console.log(`[${getTimestamp()}] ✅ KICKED USER: ${kickTarget}`);
   } catch (err) {
-    console.error(`[${getTimestamp()}] ❌ FAILED TO KICK USER: ${target}`, err.message);
+    console.error(`[${getTimestamp()}] ❌ FAILED TO KICK USER: ${kickTarget}`, err.message);
   }
   
   // 4) Send alert to admin
@@ -2100,19 +2115,21 @@ client.on('message', async msg => {
       `📍 Group: ${chat.name}`,
       `🔗 Group URL: ${groupURL}`,
       `🕒 Time: ${getTimestamp()}`,
+      `🎯 Kicked: ${kickTarget}`,
+      `📋 Blacklisted: ${blacklistTarget}`,
       '🚫 User was immediately removed and blacklisted.',
       '',
       '🔄 *To unblacklist this user, copy the command below:*'
     ].join('\n');
     
     await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
-    await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${target}`);
+    await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${blacklistTarget}`);
     console.log(`[${getTimestamp()}] ✅ Alert sent to admin`);
   } catch (e) {
     console.error(`[${getTimestamp()}] ❌ Failed to send alert: ${e.message}`);
   }
   
-  console.log(`[${getTimestamp()}] 🎯 IMMEDIATE KICK COMPLETED FOR: ${target}`);
+  console.log(`[${getTimestamp()}] 🎯 IMMEDIATE KICK COMPLETED FOR: ${kickTarget}`);
 });
 
 /* ───────────── FOREIGN-JOIN RULE (Fixed for LID) ───────────── */
