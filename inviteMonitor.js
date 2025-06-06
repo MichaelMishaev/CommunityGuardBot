@@ -16,11 +16,8 @@ console.log(`[${getTimestamp()}] 🚀 Bot starting... initializing WhatsApp Web`
 const { translate } = require('@vitalets/google-translate-api');
 
 // ─────────── Firestore & Command Cache Setup ───────────
-const admin     = require('firebase-admin');
-const path      = require('path');
-
-// load your service account key
-const serviceAccount = require(path.join(__dirname, 'guard1-dbkey.json'));
+// Firestore configuration
+const db = require('./firebaseConfig');
 
 //for mute logic
 let mutedUsers = new Map();
@@ -28,7 +25,6 @@ const mutedMsgCounts  = new Map();
 
 
 // Firestore reference and in-memory cache
-const db = admin.firestore();
 let cachedCommands = {};
 const startTime = Date.now();
 // load all commands from Firestore into cache
