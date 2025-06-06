@@ -86,9 +86,20 @@ async function processUserMessages(userId, chatId) {
       userActionCooldown.set(userId, Date.now());
       
       const chat = await client.getChatById(chatId);
-      const contact = await client.getContactById(userId);
+      console.log(`[${getTimestamp()}] 📍 Chat ID: ${chatId}`);
+      console.log(`[${getTimestamp()}] 👤 Processing user ID: ${userId}`);
       
-      // Blacklist user
+              const contact = await client.getContactById(userId).catch(err => {
+          console.error(`[${getTimestamp()}] ❌ Failed to get contact for ${userId}: ${err.message}`);
+          return null;
+        });
+        
+        if (!contact) {
+          console.error(`[${getTimestamp()}] ❌ Contact not found for ${userId}, cannot proceed with kick`);
+          return;
+        }
+        
+        // Blacklist user
       if (!(await isBlacklisted(userId))) {
         await addToBlacklist(userId);
         console.log(`[${getTimestamp()}] ✅ User ${userId} added to blacklist`);
@@ -110,12 +121,45 @@ async function processUserMessages(userId, chatId) {
         }
       }
       
-      // Kick user
+      // Kick user with validation
       try {
-        await chat.removeParticipants([userId]);
-        console.log(`[${getTimestamp()}] ✅ Kicked user: ${userId}`);
+        console.log(`[${getTimestamp()}] 🎯 Attempting to kick user: ${userId}`);
+        
+        // Validate user JID format
+        if (!userId || typeof userId !== 'string' || userId.trim() === '') {
+          throw new Error(`Invalid userId format: ${userId}`);
+        }
+        
+        // Check if user is still in the group
+        const currentParticipants = chat.participants.map(p => getParticipantJid(p));
+        const isUserInGroup = currentParticipants.includes(userId);
+        
+        console.log(`[${getTimestamp()}] 👥 User ${userId} is in group: ${isUserInGroup}`);
+        console.log(`[${getTimestamp()}] 👥 Current participants count: ${currentParticipants.length}`);
+        
+        if (!isUserInGroup) {
+          console.log(`[${getTimestamp()}] ⚠️ User ${userId} is no longer in the group, skipping kick`);
+        } else {
+          await chat.removeParticipants([userId]);
+          console.log(`[${getTimestamp()}] ✅ Kicked user: ${userId}`);
+        }
       } catch (e) {
-        console.error(`[${getTimestamp()}] ❌ Failed to kick user: ${e.message}`);
+        console.error(`[${getTimestamp()}] ❌ Failed to kick user ${userId}: ${e.message}`);
+        console.error(`[${getTimestamp()}] ❌ Full error:`, e);
+        
+        // Try alternative kick method
+        try {
+          console.log(`[${getTimestamp()}] 🔄 Trying alternative kick method for ${userId}`);
+          const participant = chat.participants.find(p => getParticipantJid(p) === userId);
+          if (participant) {
+            await chat.removeParticipants([participant.id._serialized]);
+            console.log(`[${getTimestamp()}] ✅ Alternative kick successful for ${userId}`);
+          } else {
+            console.log(`[${getTimestamp()}] ⚠️ User ${userId} not found in participants for alternative kick`);
+          }
+        } catch (altError) {
+          console.error(`[${getTimestamp()}] ❌ Alternative kick also failed: ${altError.message}`);
+        }
       }
       
       // Send single alert to admin
