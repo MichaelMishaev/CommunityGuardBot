@@ -297,7 +297,7 @@ client.on('ready', async () => {
    mutedUsers = await loadMutedUsers();
    console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.2.1 - Fixed cooldown logic preventing kicks`);
+   console.log(`[${getTimestamp()}] Version 1.3.0 - IMMEDIATE KICK - NO QUEUE! Bypassed queue system entirely`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
@@ -2049,30 +2049,70 @@ client.on('message', async msg => {
   
   console.log(`[${getTimestamp()}] 🎯 Target user for processing: ${target}`);
   
-  // IMMEDIATE deletion of invite link message - don't wait for queue
+  // ============= IMMEDIATE KICK - NO QUEUE! =============
+  console.log(`[${getTimestamp()}] 🚨 IMMEDIATE PROCESSING - NO QUEUE!`);
+  
+  // 1) Delete invite message immediately
   try {
-    console.log(`[${getTimestamp()}] 🗑️ Immediately deleting invite message from ${target}...`);
+    console.log(`[${getTimestamp()}] 🗑️ Deleting invite message from ${target}...`);
     await msg.delete(true);
-    console.log(`[${getTimestamp()}] ✅ Invite message deleted immediately`);
-    
-    // Store group codes for later processing
-    msg._groupCodes = groupCodes;
-    msg._deleted = true; // Mark as already deleted
-    
-    // Add message to queue for user action processing (kick/ban)
-    queueMessage(target, chat.id._serialized, msg, true);
-    
-    console.log(`[${getTimestamp()}] 📥 Added invite link to queue for user action processing: ${target}`);
+    console.log(`[${getTimestamp()}] ✅ Invite message deleted`);
   } catch (e) {
-    console.error(`[${getTimestamp()}] ❌ Failed to delete invite message immediately: ${e.message}`);
-    
-    // Even if deletion fails, still queue for processing
-    msg._groupCodes = groupCodes;
-    msg._deleted = false; // Mark as not deleted so queue can try again
-    queueMessage(target, chat.id._serialized, msg, true);
-    
-    console.log(`[${getTimestamp()}] 📥 Added failed-delete invite link to queue: ${target}`);
+    console.error(`[${getTimestamp()}] ❌ Failed to delete invite message: ${e.message}`);
   }
+  
+  // 2) Blacklist user immediately
+  try {
+    if (!(await isBlacklisted(target))) {
+      await addToBlacklist(target);
+      console.log(`[${getTimestamp()}] ✅ User ${target} added to blacklist`);
+    }
+    
+    // Also blacklist group codes from invite links
+    for (const code of groupCodes) {
+      const groupLid = `${code}@lid`;
+      if (!(await isBlacklisted(groupLid))) {
+        await addToBlacklist(groupLid);
+        console.log(`[${getTimestamp()}] ✅ Group LID ${groupLid} added to blacklist`);
+      }
+    }
+  } catch (e) {
+    console.error(`[${getTimestamp()}] ❌ Failed to blacklist: ${e.message}`);
+  }
+  
+  // 3) KICK USER IMMEDIATELY (same method as #kick command)
+  try {
+    console.log(`[${getTimestamp()}] 🚨 KICKING USER IMMEDIATELY: ${target}`);
+    await chat.removeParticipants([target]);
+    console.log(`[${getTimestamp()}] ✅ KICKED USER: ${target}`);
+  } catch (err) {
+    console.error(`[${getTimestamp()}] ❌ FAILED TO KICK USER: ${target}`, err.message);
+  }
+  
+  // 4) Send alert to admin
+  try {
+    const inviteCode = await chat.getInviteCode().catch(() => null);
+    const groupURL = inviteCode ? `https://chat.whatsapp.com/${inviteCode}` : '[URL unavailable]';
+    
+    const alert = [
+      '🚨 *WhatsApp Invite Spam - IMMEDIATE KICK*',
+      `👤 User: ${describeContact(contact)}`,
+      `📍 Group: ${chat.name}`,
+      `🔗 Group URL: ${groupURL}`,
+      `🕒 Time: ${getTimestamp()}`,
+      '🚫 User was immediately removed and blacklisted.',
+      '',
+      '🔄 *To unblacklist this user, copy the command below:*'
+    ].join('\n');
+    
+    await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
+    await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${target}`);
+    console.log(`[${getTimestamp()}] ✅ Alert sent to admin`);
+  } catch (e) {
+    console.error(`[${getTimestamp()}] ❌ Failed to send alert: ${e.message}`);
+  }
+  
+  console.log(`[${getTimestamp()}] 🎯 IMMEDIATE KICK COMPLETED FOR: ${target}`);
 });
 
 /* ───────────── FOREIGN-JOIN RULE (Fixed for LID) ───────────── */
