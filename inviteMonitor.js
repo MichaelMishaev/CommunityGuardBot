@@ -297,7 +297,7 @@ client.on('ready', async () => {
    mutedUsers = await loadMutedUsers();
    console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.3.1 - FIXED LID KICK BUG! Use author (LID) for kick, contactJid for blacklist`);
+   console.log(`[${getTimestamp()}] Version 1.3.2 - FIXED AUTO-KICK ON JOIN! Check both LID and legacy formats for blacklist`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
@@ -2132,26 +2132,77 @@ client.on('message', async msg => {
   console.log(`[${getTimestamp()}] 🎯 IMMEDIATE KICK COMPLETED FOR: ${kickTarget}`);
 });
 
-/* ───────────── FOREIGN-JOIN RULE (Fixed for LID) ───────────── */
+/* ───────────── BLACKLISTED USER AUTO-KICK ON JOIN (Fixed for LID) ───────────── */
 client.on('group_join', async evt => {
   const pid = evt.id?.participant;
-  if (!pid) return;
+  if (!pid) {
+    console.log(`[${getTimestamp()}] ⚠️ No participant ID in group join event`);
+    return;
+  }
+
+  console.log(`[${getTimestamp()}] 👋 User joined group: ${pid}`);
 
   const { isWhitelisted } = require('./services/whitelistService');
   const chat = await client.getChatById(evt.id.remote).catch(() => null);
-  if (!chat?.isGroup) return;
+  if (!chat?.isGroup) {
+    console.log(`[${getTimestamp()}] ⚠️ Could not get group chat for join event`);
+    return;
+  }
 
   const contact = await client.getContactById(pid).catch(() => null);
-  if (!contact) return;
+  if (!contact) {
+    console.log(`[${getTimestamp()}] ⚠️ Could not get contact for participant: ${pid}`);
+    return;
+  }
 
-  const userJid = jidKey(contact);
+  // Get both formats for comprehensive blacklist check
+  const legacyJid = jidKey(contact);  // Legacy format (972555030746@c.us)
+  const lidJid = pid;                 // LID format (130468791996475@lid)
+  
+  console.log(`[${getTimestamp()}] 🔍 Checking blacklist for user:`);
+  console.log(`[${getTimestamp()}] 📧 Legacy JID: ${legacyJid}`);
+  console.log(`[${getTimestamp()}] 🆔 LID JID: ${lidJid}`);
 
-  if (await isBlacklisted(userJid)) {
-    console.log(`🚫 User ${userJid} is blacklisted, attempting to remove...`);
+  // Check if EITHER format is blacklisted
+  const isLegacyBlacklisted = await isBlacklisted(legacyJid);
+  const isLidBlacklisted = await isBlacklisted(lidJid);
+  const isUserBlacklisted = isLegacyBlacklisted || isLidBlacklisted;
+
+  console.log(`[${getTimestamp()}] 🚫 Legacy blacklisted: ${isLegacyBlacklisted}`);
+  console.log(`[${getTimestamp()}] 🚫 LID blacklisted: ${isLidBlacklisted}`);
+  console.log(`[${getTimestamp()}] 🚫 User is blacklisted: ${isUserBlacklisted}`);
+
+  if (isUserBlacklisted) {
+    console.log(`[${getTimestamp()}] 🚨 BLACKLISTED USER JOINED - IMMEDIATE KICK: ${lidJid}`);
     
     try {
-      // Remove the blacklisted user
-      await chat.removeParticipants([pid]);
+      // Check if bot is admin first
+      let botIsAdmin = false;
+      try {
+        const botContact = await client.getContactById(client.info.wid._serialized);
+        const botJid = jidKey(botContact);
+        
+        botIsAdmin = chat.participants.some(p => {
+          const pJid = getParticipantJid(p);
+          const isBot = pJid === botJid || pJid === client.info.wid._serialized;
+          return isBot && p.isAdmin;
+        });
+        
+        console.log(`[${getTimestamp()}] 🤖 Bot admin status for auto-kick: ${botIsAdmin}`);
+      } catch (e) {
+        console.error(`[${getTimestamp()}] ❌ Error checking bot admin status: ${e.message}`);
+      }
+      
+      if (!botIsAdmin) {
+        console.log(`[${getTimestamp()}] ⚠️ Bot is not admin - cannot auto-kick blacklisted user`);
+        await client.sendMessage(`${ALERT_PHONE}@c.us`, 
+          `⚠️ *Cannot Auto-Kick Blacklisted User*\n👤 User: ${describeContact(contact)}\n📍 Group: ${chat.name}\n🚫 Reason: Bot is not admin in this group`);
+        return;
+      }
+
+      // Remove the blacklisted user using LID format (what exists in participants)
+      await chat.removeParticipants([lidJid]);
+      console.log(`[${getTimestamp()}] ✅ Auto-kicked blacklisted user: ${lidJid}`);
       
       // Notify the kicked user
       const messageToUser = [
@@ -2172,6 +2223,8 @@ client.on('group_join', async evt => {
         `📍 Group: ${chat.name}`,
         `🔗 Group URL: ${groupURL}`,
         `🕒 Time: ${getTimestamp()}`,
+        `🎯 Kicked: ${lidJid}`,
+        `📋 Blacklisted: ${legacyJid}`,
         '🚫 User was auto-removed (blacklisted).',
         '',
         '🔄 *To unblacklist this user, copy the command below:*'
@@ -2179,15 +2232,17 @@ client.on('group_join', async evt => {
       await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
       
       // Send unblacklist command as separate message for easy copying
-      await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${userJid}`);
-      console.log(`[${getTimestamp()}] ✅ Auto-kicked blacklisted user: ${userJid}`);
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${legacyJid}`);
+      
     } catch (err) {
-      console.error(`❌ Failed to auto-kick blacklisted user: ${err.message}`);
+      console.error(`[${getTimestamp()}] ❌ Failed to auto-kick blacklisted user: ${err.message}`);
       // Alert admin about failure
       await client.sendMessage(`${ALERT_PHONE}@c.us`, 
-        `❌ Failed to auto-kick blacklisted user ${describeContact(contact)} from ${chat.name}: ${err.message}`);
+        `❌ *Failed to Auto-Kick Blacklisted User*\n👤 User: ${describeContact(contact)}\n📍 Group: ${chat.name}\n🚫 Error: ${err.message}`);
     }
     return;
+  } else {
+    console.log(`[${getTimestamp()}] ✅ User is not blacklisted, allowing join: ${legacyJid}`);
   }
 });
 
