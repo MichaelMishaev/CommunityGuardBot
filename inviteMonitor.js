@@ -23,10 +23,14 @@ const COOLDOWN_DURATION = 10000; // 10 seconds cooldown between actions for same
 
 // Queue processor
 async function processUserMessages(userId, chatId) {
-  if (processingUsers.has(userId)) return;
+  if (processingUsers.has(userId)) {
+    console.log(`[${getTimestamp()}] ⚠️ Already processing ${userId}, skipping duplicate`);
+    return;
+  }
   
   processingUsers.add(userId);
   const userQueue = messageQueue.get(userId) || [];
+  console.log(`[${getTimestamp()}] 🔄 Starting queue processing for ${userId}, queue size: ${userQueue.length}`);
   let messagesToDelete = []; // Move this outside try block
   
   try {
@@ -75,7 +79,10 @@ async function processUserMessages(userId, chatId) {
     }
     
     // Take action if needed (only once per user)
+    console.log(`[${getTimestamp()}] 🔍 Queue processing for ${userId}: shouldKick=${shouldKickUser}, shouldBlacklist=${shouldBlacklistUser}, messagesProcessed=${messagesToDelete.length}`);
+    
     if (shouldKickUser && shouldBlacklistUser) {
+      console.log(`[${getTimestamp()}] 🚨 Taking action against ${userId} - KICKING AND BLACKLISTING`);
       userActionCooldown.set(userId, Date.now());
       
       const chat = await client.getChatById(chatId);
@@ -169,10 +176,14 @@ function queueMessage(userId, chatId, message, hasInvite = false) {
   }
   
   // Set new timeout - longer delay for rapid messages to batch them better
+  const timeoutDelay = hasInvite ? 300 : 1000;
+  console.log(`[${getTimestamp()}] ⏰ Setting timeout for ${userId} in ${timeoutDelay}ms`);
+  
   const timeoutId = setTimeout(() => {
+    console.log(`[${getTimestamp()}] ⏰ Timeout fired for ${userId} - processing queue now`);
     userProcessTimeouts.delete(userId);
     processUserMessages(userId, chatId);
-  }, hasInvite ? 300 : 1000); // Faster for invite links, slower for regular messages
+  }, timeoutDelay); // Faster for invite links, slower for regular messages
   
   userProcessTimeouts.set(userId, timeoutId);
 }
