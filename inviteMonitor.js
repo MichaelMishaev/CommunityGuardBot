@@ -83,7 +83,6 @@ async function processUserMessages(userId, chatId) {
     
     if (shouldKickUser && shouldBlacklistUser) {
       console.log(`[${getTimestamp()}] 🚨 Taking action against ${userId} - KICKING AND BLACKLISTING`);
-      userActionCooldown.set(userId, Date.now());
       
       const chat = await client.getChatById(chatId);
       console.log(`[${getTimestamp()}] 📍 Chat ID: ${chatId}`);
@@ -146,6 +145,10 @@ async function processUserMessages(userId, chatId) {
       
       await client.sendMessage(`${ALERT_PHONE}@c.us`, alert).catch(() => {});
       await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${userId}`).catch(() => {});
+      
+      // Set cooldown AFTER successfully taking action
+      userActionCooldown.set(userId, Date.now());
+      console.log(`[${getTimestamp()}] ⏰ Cooldown set for ${userId} for ${COOLDOWN_DURATION/1000} seconds`);
     }
     
   } catch (error) {
@@ -294,7 +297,7 @@ client.on('ready', async () => {
    mutedUsers = await loadMutedUsers();
    console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.2.0 - Fixed rapid invite link processing, improved kick validation`);
+   console.log(`[${getTimestamp()}] Version 1.2.1 - Fixed cooldown logic preventing kicks`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
