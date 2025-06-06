@@ -1940,6 +1940,9 @@ client.on('message', async msg => {
   const inviteRegex = /https?:\/\/(chat\.)?whatsapp\.com\/(chat\/)?([A-Za-z0-9]{10,})/gi;
   const matches     = body.match(inviteRegex) || [];
   
+  // Get contact JID early for debugging and processing
+  const contactJid = jidKey(contact);
+  
   // Debug logging
   if (body.toLowerCase().includes('whatsapp.com')) {
     console.log(`[${getTimestamp()}] 🔍 Detected potential WhatsApp link in message from ${msg.from}`);
@@ -1961,8 +1964,6 @@ client.on('message', async msg => {
       groupCodes.push(groupCode);
     }
   }
-
-  const contactJid = jidKey(contact);
   const senderIsAdmin = chat.participants.some(p => {
     const pJid = getParticipantJid(p);
     return pJid === contactJid && p.isAdmin;
