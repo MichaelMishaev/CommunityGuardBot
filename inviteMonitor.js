@@ -460,46 +460,47 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
             return;
         }
 
-        // Ensure the bot is an admin - find bot by checking isMe property
-        let botParticipant = null;
-        let botJid = null;
-        
-        // Method 1: Find participant with isMe property
-        for (const p of chat.participants) {
-            try {
-                const contact = await client.getContactById(getParticipantJid(p));
-                if (contact.isMe) {
-                    botParticipant = p;
-                    botJid = getParticipantJid(p);
-                    console.log(`[${getTimestamp()}] Found bot via isMe: ${botJid}`);
-                    break;
-                }
-            } catch (e) {
-                // Continue checking other participants
+        // Ensure the bot is an admin - improved detection
+        let botIsAdmin = false;
+        try {
+          // Get bot's own contact info
+          const botContact = await client.getContactById(client.info.wid._serialized);
+          const botJid = jidKey(botContact);
+          
+          console.log(`[${getTimestamp()}] 🤖 Bot JID for mute: ${botJid}`);
+          
+          // Check if bot is admin in this chat
+          botIsAdmin = chat.participants.some(p => {
+            const pJid = getParticipantJid(p);
+            const isBot = pJid === botJid || pJid === client.info.wid._serialized;
+            if (isBot) {
+              console.log(`[${getTimestamp()}] 🤖 Found bot in participants for mute: ${pJid}, isAdmin: ${p.isAdmin}`);
+              return p.isAdmin;
             }
+            return false;
+          });
+          
+          console.log(`[${getTimestamp()}] 🔍 Bot admin status for mute: ${botIsAdmin}`);
+        } catch (e) {
+          console.error(`[${getTimestamp()}] ❌ Error checking bot admin status for mute: ${e.message}`);
+          // Fallback: try to get invite code (only works if bot is admin)
+          try {
+            await chat.getInviteCode();
+            botIsAdmin = true;
+            console.log(`[${getTimestamp()}] ✅ Bot is admin for mute (confirmed via invite code test)`);
+          } catch (inviteError) {
+            console.log(`[${getTimestamp()}] ❌ Bot cannot get invite code for mute - likely not admin`);
+            botIsAdmin = false;
+          }
         }
         
-        // Method 2: If not found, try using client.info
-        if (!botParticipant && client.info && client.info.wid) {
-            const testJid = client.info.wid._serialized || client.info.wid;
-            botParticipant = chat.participants.find(p => {
-                const pJid = getParticipantJid(p);
-                return pJid === testJid || pJid === jidKey(testJid);
-            });
-            if (botParticipant) {
-                botJid = getParticipantJid(botParticipant);
-                console.log(`[${getTimestamp()}] Found bot via client.info: ${botJid}`);
-            }
+        if (!botIsAdmin) {
+          console.log(`[${getTimestamp()}] ⚠️ Bot is not admin - cannot mute users`);
+          await msg.reply('⚠️ The bot must be an admin to mute users.');
+          return;
         }
         
-        if (!botParticipant || !botParticipant.isAdmin) {
-            console.log(`[${getTimestamp()}] Bot admin check failed.`);
-            console.log(`[${getTimestamp()}] Bot found: ${botParticipant ? 'Yes' : 'No'}`);
-            console.log(`[${getTimestamp()}] Bot JID: ${botJid || 'Not found'}`);
-            console.log(`[${getTimestamp()}] Bot is admin: ${botParticipant ? botParticipant.isAdmin : 'N/A'}`);
-            await msg.reply('⚠️ The bot must be an admin to mute users.');
-            return;
-        }
+        console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with mute`);
 
         // Calculate mute expiration time
         const muteUntil = Date.now() + muteDurationMs;
@@ -620,24 +621,47 @@ if (cmd === '#botkick') {
           return;
       }
 
-      // Check if bot is admin - find bot by checking isMe property
+      // Check if bot is admin - improved detection
       let botIsAdmin = false;
-      for (const p of chat.participants) {
-          try {
-              const contact = await client.getContactById(getParticipantJid(p));
-              if (contact.isMe && p.isAdmin) {
-                  botIsAdmin = true;
-                  break;
-              }
-          } catch (e) {
-              // Continue checking
+      try {
+        // Get bot's own contact info
+        const botContact = await client.getContactById(client.info.wid._serialized);
+        const botJid = jidKey(botContact);
+        
+        console.log(`[${getTimestamp()}] 🤖 Bot JID for botkick: ${botJid}`);
+        
+        // Check if bot is admin in this chat
+        botIsAdmin = chat.participants.some(p => {
+          const pJid = getParticipantJid(p);
+          const isBot = pJid === botJid || pJid === client.info.wid._serialized;
+          if (isBot) {
+            console.log(`[${getTimestamp()}] 🤖 Found bot in participants for botkick: ${pJid}, isAdmin: ${p.isAdmin}`);
+            return p.isAdmin;
           }
+          return false;
+        });
+        
+        console.log(`[${getTimestamp()}] 🔍 Bot admin status for botkick: ${botIsAdmin}`);
+      } catch (e) {
+        console.error(`[${getTimestamp()}] ❌ Error checking bot admin status for botkick: ${e.message}`);
+        // Fallback: try to get invite code (only works if bot is admin)
+        try {
+          await chat.getInviteCode();
+          botIsAdmin = true;
+          console.log(`[${getTimestamp()}] ✅ Bot is admin for botkick (confirmed via invite code test)`);
+        } catch (inviteError) {
+          console.log(`[${getTimestamp()}] ❌ Bot cannot get invite code for botkick - likely not admin`);
+          botIsAdmin = false;
+        }
       }
 
       if (!botIsAdmin) {
+          console.log(`[${getTimestamp()}] ⚠️ Bot is not admin - cannot kick users via botkick`);
           await msg.reply('⚠️ The bot must be an admin to kick users.');
           return;
       }
+      
+      console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with botkick`);
 
       let kickedUsers = [];
       for (const participant of chat.participants) {
@@ -1167,24 +1191,47 @@ if (msg.hasQuotedMsg && cmd === '#ban') {
             return;
         }
         
-        // Check if bot is admin
+        // Check if bot is admin - improved detection (same as invite link handler)
         let botIsAdmin = false;
-        for (const p of chat.participants) {
-            try {
-                const contact = await client.getContactById(getParticipantJid(p));
-                if (contact.isMe && p.isAdmin) {
-                    botIsAdmin = true;
-                    break;
-                }
-            } catch (e) {
-                // Continue
+        try {
+          // Get bot's own contact info
+          const botContact = await client.getContactById(client.info.wid._serialized);
+          const botJid = jidKey(botContact);
+          
+          console.log(`[${getTimestamp()}] 🤖 Bot JID for ban: ${botJid}`);
+          
+          // Check if bot is admin in this chat
+          botIsAdmin = chat.participants.some(p => {
+            const pJid = getParticipantJid(p);
+            const isBot = pJid === botJid || pJid === client.info.wid._serialized;
+            if (isBot) {
+              console.log(`[${getTimestamp()}] 🤖 Found bot in participants for ban: ${pJid}, isAdmin: ${p.isAdmin}`);
+              return p.isAdmin;
             }
+            return false;
+          });
+          
+          console.log(`[${getTimestamp()}] 🔍 Bot admin status for ban: ${botIsAdmin}`);
+        } catch (e) {
+          console.error(`[${getTimestamp()}] ❌ Error checking bot admin status for ban: ${e.message}`);
+          // Fallback: try to get invite code (only works if bot is admin)
+          try {
+            await chat.getInviteCode();
+            botIsAdmin = true;
+            console.log(`[${getTimestamp()}] ✅ Bot is admin for ban (confirmed via invite code test)`);
+          } catch (inviteError) {
+            console.log(`[${getTimestamp()}] ❌ Bot cannot get invite code for ban - likely not admin`);
+            botIsAdmin = false;
+          }
         }
         
         if (!botIsAdmin) {
-            await msg.reply('⚠️ The bot must be an admin to ban users.');
-            return;
+          console.log(`[${getTimestamp()}] ⚠️ Bot is not admin - cannot ban users`);
+          await msg.reply('⚠️ The bot must be an admin to ban users.');
+          return;
         }
+        
+        console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with ban`);
         
         // 1) Delete the quoted message
         try {
