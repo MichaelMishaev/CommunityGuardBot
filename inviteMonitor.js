@@ -13,6 +13,170 @@ function getTimestamp() {
 
 console.log(`[${getTimestamp()}] 🚀 Bot starting... initializing WhatsApp Web`);
 
+// ─────────── Message Processing Queue & Deduplication ───────────
+const messageQueue = new Map(); // Queue for processing messages per user
+const processingUsers = new Set(); // Track users currently being processed
+const processedMessages = new Map(); // Track processed message IDs to avoid duplicates
+const userActionCooldown = new Map(); // Cooldown for user actions (kick, ban, etc.)
+const userProcessTimeouts = new Map(); // Track processing timeouts for batching
+const COOLDOWN_DURATION = 10000; // 10 seconds cooldown between actions for same user
+
+// Queue processor
+async function processUserMessages(userId, chatId) {
+  if (processingUsers.has(userId)) return;
+  
+  processingUsers.add(userId);
+  const userQueue = messageQueue.get(userId) || [];
+  let messagesToDelete = []; // Move this outside try block
+  
+  try {
+    // Process all queued messages for this user
+    let shouldKickUser = false;
+    let shouldBlacklistUser = false;
+    
+    for (const queuedMsg of userQueue) {
+      if (!processedMessages.has(queuedMsg.id)) {
+        messagesToDelete.push(queuedMsg);
+        processedMessages.set(queuedMsg.id, true);
+        
+        // Check if message contains invite link
+        if (queuedMsg.hasInvite) {
+          shouldKickUser = true;
+          shouldBlacklistUser = true;
+        }
+      }
+    }
+    
+    // Delete all messages first (with rate limiting) - skip already deleted ones
+    let actuallyDeleted = 0;
+    for (const msg of messagesToDelete) {
+      // Skip if message was already deleted immediately (for invite links)
+      if (msg.message._deleted) {
+        console.log(`[${getTimestamp()}] ⏭️ Skipping message ${msg.id} - already deleted`);
+        actuallyDeleted++; // Count as deleted for reporting
+        continue;
+      }
+      
+      try {
+        await msg.message.delete(true);
+        actuallyDeleted++;
+        console.log(`[${getTimestamp()}] 🗑️ Deleted message ${msg.id} from ${userId}`);
+        await new Promise(resolve => setTimeout(resolve, 200)); // Rate limit: 200ms between deletions
+      } catch (e) {
+        console.error(`[${getTimestamp()}] ❌ Failed to delete message ${msg.id}: ${e.message}`);
+      }
+    }
+    
+    // Check cooldown before taking action
+    const lastAction = userActionCooldown.get(userId);
+    if (lastAction && Date.now() - lastAction < COOLDOWN_DURATION) {
+      console.log(`[${getTimestamp()}] ⏳ User ${userId} on cooldown, skipping action`);
+      return;
+    }
+    
+    // Take action if needed (only once per user)
+    if (shouldKickUser && shouldBlacklistUser) {
+      userActionCooldown.set(userId, Date.now());
+      
+      const chat = await client.getChatById(chatId);
+      const contact = await client.getContactById(userId);
+      
+      // Blacklist user
+      if (!(await isBlacklisted(userId))) {
+        await addToBlacklist(userId);
+        console.log(`[${getTimestamp()}] ✅ User ${userId} added to blacklist`);
+      }
+      
+      // Also blacklist group codes from invite links
+      const allGroupCodes = new Set();
+      for (const msg of messagesToDelete) {
+        if (msg.message._groupCodes) {
+          msg.message._groupCodes.forEach(code => allGroupCodes.add(code));
+        }
+      }
+      
+      for (const code of allGroupCodes) {
+        const groupLid = `${code}@lid`;
+        if (!(await isBlacklisted(groupLid))) {
+          await addToBlacklist(groupLid);
+          console.log(`[${getTimestamp()}] ✅ Group LID ${groupLid} added to blacklist`);
+        }
+      }
+      
+      // Kick user
+      try {
+        await chat.removeParticipants([userId]);
+        console.log(`[${getTimestamp()}] ✅ Kicked user: ${userId}`);
+      } catch (e) {
+        console.error(`[${getTimestamp()}] ❌ Failed to kick user: ${e.message}`);
+      }
+      
+      // Send single alert to admin
+      const inviteCode = await chat.getInviteCode().catch(() => null);
+      const groupURL = inviteCode ? `https://chat.whatsapp.com/${inviteCode}` : '[URL unavailable]';
+      
+      const alert = [
+        '🚨 *WhatsApp Invite Spam Detected & User Kicked*',
+        `👤 User: ${describeContact(contact)}`,
+        `📍 Group: ${chat.name}`,
+        `🔗 Group URL: ${groupURL}`,
+        `📊 Spam Messages Deleted: ${messagesToDelete.length}`,
+        '🚫 User was removed and blacklisted.',
+        '',
+        '🔄 *To unblacklist this user, copy the command below:*'
+      ].join('\n');
+      
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, alert).catch(() => {});
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${userId}`).catch(() => {});
+    }
+    
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error processing messages for ${userId}: ${error.message}`);
+  } finally {
+    // Clean up
+    messageQueue.delete(userId);
+    processingUsers.delete(userId);
+    
+    // Clean up old processed messages (older than 1 minute)
+    if (messagesToDelete.length > 0) {
+      setTimeout(() => {
+        for (const msg of messagesToDelete) {
+          processedMessages.delete(msg.id);
+        }
+      }, 60000);
+    }
+  }
+}
+
+// Add message to queue with improved batching
+function queueMessage(userId, chatId, message, hasInvite = false) {
+  if (!messageQueue.has(userId)) {
+    messageQueue.set(userId, []);
+  }
+  
+  messageQueue.get(userId).push({
+    id: message.id._serialized,
+    message: message,
+    hasInvite: hasInvite,
+    timestamp: Date.now()
+  });
+  
+  console.log(`[${getTimestamp()}] 📝 Queued message from ${userId}, queue size: ${messageQueue.get(userId).length}`);
+  
+  // Clear any existing timeout for this user
+  if (userProcessTimeouts.has(userId)) {
+    clearTimeout(userProcessTimeouts.get(userId));
+  }
+  
+  // Set new timeout - longer delay for rapid messages to batch them better
+  const timeoutId = setTimeout(() => {
+    userProcessTimeouts.delete(userId);
+    processUserMessages(userId, chatId);
+  }, hasInvite ? 300 : 1000); // Faster for invite links, slower for regular messages
+  
+  userProcessTimeouts.set(userId, timeoutId);
+}
+
 const { translate } = require('@vitalets/google-translate-api');
 
 // ─────────── Firestore & Command Cache Setup ───────────
@@ -47,7 +211,10 @@ async function loadCommands() {
 
 /* ───────────────── BOT CLIENT ───────────────── */
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({
+    dataPath: './.wwebjs_auth',
+    clientId: 'community-guard-bot'
+  }),
   puppeteer: {
     headless: true,
     args: [
@@ -55,8 +222,28 @@ const client = new Client({
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--disable-software-rasterizer'
-    ]
+      '--disable-software-rasterizer',
+      '--disable-web-security',
+      '--disable-features=VizDisplayCompositor',
+      '--disable-extensions',
+      '--disable-plugins',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-translate',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--disable-field-trial-config',
+      '--disable-ipc-flooding-protection',
+      '--enable-automation',
+      '--password-store=basic',
+      '--use-mock-keychain'
+    ],
+    defaultViewport: null,
+    ignoreDefaultArgs: ['--disable-extensions'],
+    timeout: 60000
   }
 });
 
@@ -85,7 +272,7 @@ client.on('ready', async () => {
    mutedUsers = await loadMutedUsers();
    console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.0.10 - improved code`);
+   console.log(`[${getTimestamp()}] Version 1.1.0 - Queue system, #ban command, improved #clear`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
@@ -577,31 +764,32 @@ if (cleaned === '#help') {
       '',
       '*🚨 Group Management Commands:*',
       '9. *#kick* - Kick a user from the group (reply to a message)',
-      '10. *#cf* - Check for foreign numbers in the group',
-      '11. *#mute [minutes]* - Mute the entire group for the specified number of minutes\n    (admin only)',
-      '12. *#mute (reply) [minutes]* - Mute a specific user for the specified number of minutes\n    (admin only), kicked out if they send more than 3 messages while muted',
-      '13. *#botkick* - Automatically kick out all blacklisted users from the current group',
-      '14. *#warn* - Send a warning to a user (reply to their message, admin only)',
-      '15. *#clear* - Delete last 10 messages from a user (reply to their message OR use #clear [JID/number])',
-      '16. *#cleartest* - Test bot\'s message deletion capabilities (admin only)',
-      '17. *#cleardebug* - Debug message author detection (reply to message)',
+      '10. *#ban* - Ban a user permanently (reply to message, adds to blacklist)',
+      '11. *#cf* - Check for foreign numbers in the group',
+      '12. *#mute [minutes]* - Mute the entire group for the specified number of minutes\n    (admin only)',
+      '13. *#mute (reply) [minutes]* - Mute a specific user for the specified number of minutes\n    (admin only), kicked out if they send more than 3 messages while muted',
+      '14. *#botkick* - Automatically kick out all blacklisted users from the current group',
+      '15. *#warn* - Send a warning to a user (reply to their message, admin only)',
+      '16. *#clear* - Delete last 10 messages from a user (reply to their message)',
+      '17. *#cleartest* - Test bot\'s message deletion capabilities (admin only)',
+      '18. *#cleardebug* - Debug message author detection (reply to message)',
       '',
       '*👑 Super Admin Commands:*',
-      '18. *#promote* - Promote a user to admin (reply to their message, super admin only)',
-      '19. *#demote* - Demote an admin to regular user (reply to their message, super admin only)',
+      '19. *#promote* - Promote a user to admin (reply to their message, super admin only)',
+      '20. *#demote* - Demote an admin to regular user (reply to their message, super admin only)',
       '',
       '*📢 Communication Commands:*',
-      '20. *#announce [message]* - Send an announcement to all group members (admin only)',
-      '21. *#pin [days]* - Pin a message (reply to message, default 7 days, admin only)',
-      '22. *#translate* - Translate a message to Hebrew (reply to message or provide text)',
+      '21. *#announce [message]* - Send an announcement to all group members (admin only)',
+      '22. *#pin [days]* - Pin a message (reply to message, default 7 days, admin only)',
+      '23. *#translate* - Translate a message to Hebrew (reply to message or provide text)',
       '',
       '*📊 Information Commands:*',
-      '23. *#stats* - Show group statistics (member count, admin count, etc.)',
-      '24. *#commands* - Display all loaded custom commands from Firestore',
-      '25. *#help* - Show this help message',
+      '24. *#stats* - Show group statistics (member count, admin count, etc.)',
+      '25. *#commands* - Display all loaded custom commands from Firestore',
+      '26. *#help* - Show this help message',
       '',
       '*🔄 Recovery Commands:*',
-      '26. *#unb [number]* - Unban a previously banned number\n    (e.g., #unb 972555123456), must be as a reply to a bot message',
+      '27. *#unb [number]* - Unban a previously banned number\n    (e.g., #unb 972555123456), must be as a reply to a bot message',
       '',
       '💡 *Note:* Use these commands responsibly to ensure group safety and proper user behavior.',
       '⚠️ *WhatsApp URLs:* When someone posts a WhatsApp group link, they are automatically kicked and blacklisted.',
@@ -904,10 +1092,23 @@ if (msg.fromMe && cmd === '#kick' && msg.hasQuotedMsg) {
     return;
   }
 
-  // 2) Delete only the replied-to message
-  try { await quoted.delete(true); } catch { /* ignore */ }
+  // 2) Delete the quoted message first
+  try { 
+    await quoted.delete(true); 
+    console.log(`[${getTimestamp()}] 🗑️ Deleted quoted message`);
+  } catch (e) { 
+    console.error(`[${getTimestamp()}] ❌ Failed to delete quoted message: ${e.message}`);
+  }
 
-  // 3) Kick the user
+  // 3) Delete the #kick command message itself
+  try {
+    await msg.delete(true);
+    console.log(`[${getTimestamp()}] 🗑️ Deleted #kick command message`);
+  } catch (e) {
+    console.error(`[${getTimestamp()}] ❌ Failed to delete command message: ${e.message}`);
+  }
+
+  // 4) Kick the user
   try { 
     await chat.removeParticipants([target]); 
     console.log(`[${getTimestamp()}] ✅ Kicked user: ${target}`);
@@ -915,24 +1116,140 @@ if (msg.fromMe && cmd === '#kick' && msg.hasQuotedMsg) {
     console.error(`[${getTimestamp()}] ❌ Failed to kick user:`, err.message);
   }
 
-  // 4) Build Group URL
+  // 5) Build Group URL
   const inviteCode = await chat.getInviteCode().catch(() => null);
   const groupURL = inviteCode
     ? `https://chat.whatsapp.com/${inviteCode}`
     : '[URL unavailable]';
 
-  // 5) Send alert *only* to ALERT_PHONE
+  // 6) Send alert *only* to ALERT_PHONE
   const alert = [
     '🚨 User Kicked',
     `👤 Number: ${target}`,
     `📍 Group: ${chat.name}`,
     `🔗 Group URL: ${groupURL}`,
-    '🗑️ Message Deleted: 1',
+    '🗑️ Messages Deleted: 2',
     '🚫 User was removed.'
   ].join('\n');
 
   await client.sendMessage(`${ALERT_PHONE}@c.us`, alert).catch(() => {});
   return;
+}
+
+// ─────── #ban – Ban user (delete message, blacklist, send alert) ───────
+if (msg.hasQuotedMsg && cmd === '#ban') {
+    try {
+        const chat = await msg.getChat();
+        const sender = await msg.getContact();
+        const quotedMsg = await msg.getQuotedMessage();
+        
+        if (!chat.isGroup) {
+            await msg.reply('⚠️ This command can only be used in groups.');
+            return;
+        }
+        
+        // Check if sender is admin
+        const senderJid = getParticipantJid(sender);
+        const isAdmin = chat.participants.some(p => {
+            const pJid = getParticipantJid(p);
+            return pJid === senderJid && p.isAdmin;
+        });
+        
+        if (!isAdmin) {
+            await msg.reply('🚫 You must be an admin to ban users.');
+            return;
+        }
+        
+        // Get target user
+        const target = getMessageAuthor(quotedMsg);
+        if (!target) {
+            await msg.reply('⚠️ Unable to identify the user to ban.');
+            return;
+        }
+        
+        // Check if bot is admin
+        let botIsAdmin = false;
+        for (const p of chat.participants) {
+            try {
+                const contact = await client.getContactById(getParticipantJid(p));
+                if (contact.isMe && p.isAdmin) {
+                    botIsAdmin = true;
+                    break;
+                }
+            } catch (e) {
+                // Continue
+            }
+        }
+        
+        if (!botIsAdmin) {
+            await msg.reply('⚠️ The bot must be an admin to ban users.');
+            return;
+        }
+        
+        // 1) Delete the quoted message
+        try {
+            await quotedMsg.delete(true);
+            console.log(`[${getTimestamp()}] 🗑️ Deleted quoted message for ban`);
+        } catch (e) {
+            console.error(`[${getTimestamp()}] ❌ Failed to delete message: ${e.message}`);
+        }
+        
+        // 2) Add to blacklist
+        const targetJid = jidKey(target);
+        if (!(await isBlacklisted(targetJid))) {
+            await addToBlacklist(targetJid);
+            console.log(`[${getTimestamp()}] ✅ User ${targetJid} added to blacklist`);
+        }
+        
+        // 3) Kick the user
+        try {
+            await chat.removeParticipants([target]);
+            console.log(`[${getTimestamp()}] ✅ Banned and kicked user: ${target}`);
+        } catch (e) {
+            console.error(`[${getTimestamp()}] ❌ Failed to kick user: ${e.message}`);
+        }
+        
+        // 4) Send ban notification to user
+        const banMessage = [
+            '🚫 You have been banned from the group.',
+            '📍 Your user ID has been added to the blacklist.',
+            '❗ If you believe this is a mistake, please contact the group admin.',
+            `📱 Admin: +${ADMIN_PHONE}`
+        ].join('\n');
+        await client.sendMessage(target, banMessage).catch(() => {});
+        
+        // 5) Get group info for alert
+        const inviteCode = await chat.getInviteCode().catch(() => null);
+        const groupURL = inviteCode ? `https://chat.whatsapp.com/${inviteCode}` : '[URL unavailable]';
+        
+        // 6) Send alert to ALERT_PHONE
+        const alert = [
+            '🚨 *User Banned*',
+            `👤 User: ${target}`,
+            `📍 Group: ${chat.name}`,
+            `🔗 Group URL: ${groupURL}`,
+            `🕒 Time: ${getTimestamp()}`,
+            '🚫 User was removed and blacklisted.',
+            '',
+            '🔄 *To unblacklist this user, copy the command below:*'
+        ].join('\n');
+        
+        await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
+        await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${targetJid}`);
+        
+        // Delete the ban command message
+        try {
+            await msg.delete(true);
+        } catch (e) {
+            // Ignore
+        }
+        
+        console.log(`[${getTimestamp()}] ✅ Ban completed for ${target}`);
+    } catch (err) {
+        console.error('❌ Ban error:', err.message);
+        await msg.reply('❌ Failed to ban user.');
+    }
+    return;
 }
 
 if (cmd === '#translate') {
@@ -1091,7 +1408,7 @@ if (msg.hasQuotedMsg && cmd === '#clear') {
         return;
     }
     
-    // Check if bot is admin (same logic as other commands)
+    // Check if bot is admin
     let botIsAdmin = false;
     for (const p of chat.participants) {
         try {
@@ -1110,7 +1427,7 @@ if (msg.hasQuotedMsg && cmd === '#clear') {
         return;
     }
     
-    // Get target using SAME logic as #kick command
+    // Get target user
     const target = getMessageAuthor(quotedMsg);
     if (!target) {
         await msg.reply('⚠️ Could not determine target user.');
@@ -1120,73 +1437,67 @@ if (msg.hasQuotedMsg && cmd === '#clear') {
     console.log(`[${getTimestamp()}] #clear target: ${target}`);
     
     try {
-        // Step 1: Delete the quoted message (we know this works)
-        console.log(`[${getTimestamp()}] Deleting quoted message...`);
-        try {
-            await quotedMsg.delete(true);
-            console.log(`[${getTimestamp()}] ✅ Quoted message deleted`);
-        } catch (e) {
-            console.log(`[${getTimestamp()}] ❌ Failed to delete quoted message: ${e.message}`);
-        }
+        // Fetch more messages for better results
+        const messages = await chat.fetchMessages({ limit: 100 });
         
-        // Step 2: Find and delete recent messages (last 20 messages only for better success rate)
-        console.log(`[${getTimestamp()}] Finding recent messages...`);
-        const messages = await chat.fetchMessages({ limit: 20 }); // Only recent messages
+        // Filter messages from target user
+        const targetMessages = messages.filter(m => {
+            const author = getMessageAuthor(m);
+            return author === target && m.id.id !== msg.id.id;
+        });
         
-        let deletedCount = 1; // Count the quoted message
-        let foundCount = 0;
+        console.log(`[${getTimestamp()}] Found ${targetMessages.length} messages from target user`);
         
-        // Process messages in reverse order (newest first)
-        for (let i = 0; i < messages.length; i++) {
-            const message = messages[i];
-            const messageAuthor = getMessageAuthor(message);
+        // Sort by timestamp (newest first) and take last 10
+        const messagesToDelete = targetMessages
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .slice(0, 10);
+        
+        let deletedCount = 0;
+        const deletePromises = [];
+        
+        // Delete messages in parallel batches
+        for (let i = 0; i < messagesToDelete.length; i++) {
+            const message = messagesToDelete[i];
             
-            // Skip if not from target, is command, or is already deleted quoted message
-            if (messageAuthor !== target || 
-                message.id.id === msg.id.id || 
-                message.id.id === quotedMsg.id.id) {
-                continue;
-            }
-            
-            foundCount++;
-            
-            // Only try to delete the most recent messages (better chance of success)
-            if (foundCount <= 9) { // Plus the quoted message = 10 total
+            // Create delete promise
+            const deletePromise = (async () => {
                 try {
-                    console.log(`[${getTimestamp()}] Deleting recent message ${foundCount}: ${message.body?.substring(0, 30) || '[media]'}`);
-                    
-                    // Check message age (only delete recent messages)
-                    const messageAge = Date.now() - (message.timestamp * 1000);
-                    const oneHour = 60 * 60 * 1000;
-                    
-                    if (messageAge < oneHour) {
-                        // Recent message - should delete successfully
-                        await message.delete(true);
-                        deletedCount++;
-                        console.log(`[${getTimestamp()}] ✅ Deleted recent message ${foundCount}`);
-                    } else {
-                        // Old message - try but might not work
-                        console.log(`[${getTimestamp()}] ⚠️ Message is ${Math.round(messageAge / (1000 * 60))} minutes old`);
-                        await message.delete(true);
-                        deletedCount++;
-                        console.log(`[${getTimestamp()}] ✅ Deleted old message ${foundCount}`);
-                    }
-                    
-                    // Delay between deletions
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    
+                    await message.delete(true);
+                    deletedCount++;
+                    console.log(`[${getTimestamp()}] ✅ Deleted message ${i + 1}/${messagesToDelete.length}`);
                 } catch (e) {
-                    console.error(`[${getTimestamp()}] ❌ Failed to delete message ${foundCount}: ${e.message}`);
+                    console.error(`[${getTimestamp()}] ❌ Failed to delete message: ${e.message}`);
+                }
+            })();
+            
+            deletePromises.push(deletePromise);
+            
+            // Process in batches of 3 to avoid rate limits
+            if ((i + 1) % 3 === 0 || i === messagesToDelete.length - 1) {
+                await Promise.all(deletePromises);
+                deletePromises.length = 0;
+                
+                // Small delay between batches
+                if (i < messagesToDelete.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 300));
                 }
             }
         }
         
-        console.log(`[${getTimestamp()}] Clear completed: ${deletedCount} messages processed, ${foundCount} found`);
+        // Delete the command message itself
+        try {
+            await msg.delete(true);
+        } catch (e) {
+            // Ignore
+        }
         
+        console.log(`[${getTimestamp()}] Clear completed: ${deletedCount}/${messagesToDelete.length} messages deleted`);
+        
+        // Send summary to admin
         if (deletedCount > 0) {
-        //    await msg.reply(`🧹 Deleted ${deletedCount} messages from @${target.split('@')[0]}`);
-        } else {
-        //    await msg.reply(`⚠️ No messages found to delete from @${target.split('@')[0]}`);
+            await client.sendMessage(`${ALERT_PHONE}@c.us`, 
+                `🧹 Cleared ${deletedCount} messages from @${target.split('@')[0]} in ${chat.name}`);
         }
         
     } catch (err) {
@@ -1617,18 +1928,38 @@ client.on('message', async msg => {
     return;
   }
 
-  // Check if bot is admin - find bot by checking isMe property
+  // Check if bot is admin - improved detection
   let botIsAdmin = false;
-  for (const p of chat.participants) {
-      try {
-          const contact = await client.getContactById(getParticipantJid(p));
-          if (contact.isMe && p.isAdmin) {
-              botIsAdmin = true;
-              break;
-          }
-      } catch (e) {
-          // Continue checking
+  try {
+    // Get bot's own contact info
+    const botContact = await client.getContactById(client.info.wid._serialized);
+    const botJid = jidKey(botContact);
+    
+    console.log(`[${getTimestamp()}] 🤖 Bot JID: ${botJid}`);
+    
+    // Check if bot is admin in this chat
+    botIsAdmin = chat.participants.some(p => {
+      const pJid = getParticipantJid(p);
+      const isBot = pJid === botJid || pJid === client.info.wid._serialized;
+      if (isBot) {
+        console.log(`[${getTimestamp()}] 🤖 Found bot in participants: ${pJid}, isAdmin: ${p.isAdmin}`);
+        return p.isAdmin;
       }
+      return false;
+    });
+    
+    console.log(`[${getTimestamp()}] 🔍 Bot admin status: ${botIsAdmin}`);
+  } catch (e) {
+    console.error(`[${getTimestamp()}] ❌ Error checking bot admin status: ${e.message}`);
+    // Fallback: try to get invite code (only works if bot is admin)
+    try {
+      await chat.getInviteCode();
+      botIsAdmin = true;
+      console.log(`[${getTimestamp()}] ✅ Bot is admin (confirmed via invite code test)`);
+    } catch (inviteError) {
+      console.log(`[${getTimestamp()}] ❌ Bot cannot get invite code - likely not admin`);
+      botIsAdmin = false;
+    }
   }
   
   if (!botIsAdmin) {
@@ -1638,74 +1969,32 @@ client.on('message', async msg => {
   
   console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with invite link moderation`); 
 
-  await chat.sendSeen().catch(() => {});
-  
   const target = author || contactJid;
-
-// 1) Delete the invite message
-try {
-  console.log(`[${getTimestamp()}] Attempting to delete invite message...`);
-  await msg.delete(true);
-  console.log(`[${getTimestamp()}] 🗑️ Invite message deleted successfully`);
-} catch (e) {
-  console.error(`[${getTimestamp()}] ❌ Failed to delete invite message:`, e.message);
-  console.error(`[${getTimestamp()}] Error details:`, e);
-}
-
-// 2) Blacklist the sender AND the group codes (if not already)
-try {
-  const userJid = jidKey(contact);
-  if (!(await isBlacklisted(userJid))) {
-    await addToBlacklist(userJid);
-    console.log(`✅ User ${userJid} added to blacklist`);
-  } else {
-    console.log(`🚫 User ${userJid} is already blacklisted.`);
-  }
   
-  // Also blacklist each group code as potential LID
-  for (const code of groupCodes) {
-    const groupLid = `${code}@lid`;
-    if (!(await isBlacklisted(groupLid))) {
-      await addToBlacklist(groupLid);
-      console.log(`✅ Group LID ${groupLid} added to blacklist`);
-    }
+  // IMMEDIATE deletion of invite link message - don't wait for queue
+  try {
+    console.log(`[${getTimestamp()}] 🗑️ Immediately deleting invite message from ${target}...`);
+    await msg.delete(true);
+    console.log(`[${getTimestamp()}] ✅ Invite message deleted immediately`);
+    
+    // Store group codes for later processing
+    msg._groupCodes = groupCodes;
+    msg._deleted = true; // Mark as already deleted
+    
+    // Add message to queue for user action processing (kick/ban)
+    queueMessage(target, chat.id._serialized, msg, true);
+    
+    console.log(`[${getTimestamp()}] 📥 Added invite link to queue for user action processing: ${target}`);
+  } catch (e) {
+    console.error(`[${getTimestamp()}] ❌ Failed to delete invite message immediately: ${e.message}`);
+    
+    // Even if deletion fails, still queue for processing
+    msg._groupCodes = groupCodes;
+    msg._deleted = false; // Mark as not deleted so queue can try again
+    queueMessage(target, chat.id._serialized, msg, true);
+    
+    console.log(`[${getTimestamp()}] 📥 Added failed-delete invite link to queue: ${target}`);
   }
-} catch (err) {
-  console.error(`[${getTimestamp()}] ❌ Failed to add to blacklist:`, err.message);
-}
-
-// 3) Remove (kick) the sender from group
-try {
-  await chat.removeParticipants([target]);
-  console.log(`[${getTimestamp()}] ✅ Kicked user: ${target}`);
-} catch (e) {
-  console.error(`[${getTimestamp()}] ❌ Kick failed:`, e.message);
-}
-
-// 4) Build and send rich alert with group URL
-const inviteCode = await chat.getInviteCode().catch(() => null);
-const groupURL = inviteCode
-  ? `https://chat.whatsapp.com/${inviteCode}`
-  : '[URL unavailable]';
-
-const alert = [
-  '🚨 *WhatsApp Invite Detected & User Kicked*',
-  `👤 User: ${describeContact(contact)}`,
-  `📍 Group: ${chat.name}`,
-  `🔗 Group URL: ${groupURL}`,
-  '🔗 Posted link(s):',
-  ...matches.map(l => `   • ${l}`),
-  '🗑️ Message Deleted: 1',
-  '🚫 User was removed and blacklisted.',
-  '',
-  '🔄 *To unblacklist this user, copy the command below:*'
-].filter(Boolean).join('\n');
-
-await client.sendMessage(`${ALERT_PHONE}@c.us`, alert).catch(() => {});
-
-// Send unblacklist command as separate message for easy copying
-await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${jidKey(contact)}`).catch(() => {});
-console.log(`[${getTimestamp()}] ✅ Invite handled, message deleted & user kicked for ${describeContact(contact)}`);
 });
 
 /* ───────────── FOREIGN-JOIN RULE (Fixed for LID) ───────────── */
@@ -1805,5 +2094,40 @@ client.on('loading_screen', pct => console.log(`🔄 Loading screen: ${pct}%`));
 client.on('change_state', st => console.log('🧭 State changed to:', st));
 
 /* ───────────── START BOT ───────────── */
+console.log(`[${getTimestamp()}] 🚀 Bot starting... initializing WhatsApp Web`);
 console.log(`[${getTimestamp()}] 📡 Calling client.initialize()…`);
-client.initialize();
+
+// Add startup timeout and retry logic
+const startBot = async () => {
+  try {
+    await client.initialize();
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Bot initialization failed:`, error.message);
+    
+    // Send alert about startup failure
+    try {
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, 
+        `❌ *Bot startup failed*\n• Time: ${getTimestamp()}\n• Error: ${error.message}`);
+    } catch (e) {
+      console.error(`[${getTimestamp()}] ❌ Failed to send startup failure alert:`, e.message);
+    }
+    
+    // Wait and retry
+    console.log(`[${getTimestamp()}] 🔄 Retrying in 10 seconds...`);
+    setTimeout(() => {
+      console.log(`[${getTimestamp()}] 🔄 Restarting bot...`);
+      process.exit(1); // Let PM2 restart us
+    }, 10000);
+  }
+};
+
+// Handle browser crashes during startup
+client.on('puppeteer_start', () => {
+  console.log(`[${getTimestamp()}] 🎭 Puppeteer browser starting...`);
+});
+
+client.on('browser_close', () => {
+  console.log(`[${getTimestamp()}] 🎭 Browser closed unexpectedly`);
+});
+
+startBot();
