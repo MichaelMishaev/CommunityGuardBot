@@ -297,7 +297,7 @@ client.on('ready', async () => {
    mutedUsers = await loadMutedUsers();
    console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.3.3 - Added spam link to alert message for better tracking`);
+   console.log(`[${getTimestamp()}] Version 1.3.4 - Fixed spam link display - use clean extracted URLs not raw body`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
@@ -2117,7 +2117,7 @@ client.on('message', async msg => {
       `🕒 Time: ${getTimestamp()}`,
       `🎯 Kicked: ${kickTarget}`,
       `📋 Blacklisted: ${blacklistTarget}`,
-      `📨 Spam Link Sent: ${body}`,
+      `📨 Spam Link Sent: ${matches.join(', ')}`,
       '🚫 User was immediately removed and blacklisted.',
       '',
       '🔄 *To unblacklist this user, copy the command below:*'
