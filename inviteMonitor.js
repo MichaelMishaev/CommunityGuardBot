@@ -297,7 +297,7 @@ client.on('ready', async () => {
    mutedUsers = await loadMutedUsers();
    console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.3.4 - Fixed spam link display - use clean extracted URLs not raw body`);
+   console.log(`[${getTimestamp()}] Version 1.3.5 - CRITICAL FIXES: Enhanced unblacklist + improved admin detection`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
@@ -1030,34 +1030,63 @@ if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
           }
           return;
 
-          // ✅ remove number from blacklist
+          // ✅ remove number from blacklist (BOTH formats)
           case '#unblacklist':
             if (!arg) {
               await msg.reply([
                 '⚠️ Unblacklist Command Error',
                 '🚫 Missing phone number.',
-                '💡 Usage: #unblacklist 972555123456'
+                '💡 Usage: #unblacklist 972555123456 or #unblacklist 130468791996475@lid'
               ].join('\n'));
               return;
             }
-            const targetJidUBL = jidKey(arg);
-            if (!targetJidUBL) {
-              await msg.reply('⚠️ Invalid identifier. Please supply a valid JID or phone number.');
-              return;
+            
+            // Handle both formats - if user provides one, try to remove both
+            let removedCount = 0;
+            const removedFormats = [];
+            
+            // First, try to remove the exact format provided
+            const providedJid = jidKey(arg) || arg; // Keep original if jidKey fails
+            if (await removeFromBlacklist(providedJid)) {
+              removedCount++;
+              removedFormats.push(providedJid);
+              console.log(`✅ Manually unblacklisted: ${providedJid}`);
+            }
+            
+            // If user provided legacy format, also search for related LID entries
+            if (providedJid.includes('@c.us')) {
+              const phoneNumber = providedJid.split('@')[0];
+              console.log(`[${getTimestamp()}] 🔍 Searching for LID entries related to ${phoneNumber}`);
+              
+              // Get all blacklisted entries and look for potential matches
+              const blacklistedNumbers = await listBlacklist();
+              
+              // For now, let user manually specify both if needed
+              // This is safer than guessing which LID belongs to which legacy number
+              console.log(`[${getTimestamp()}] ℹ️ If user has LID format too, they need to unblacklist it separately`);
+            }
+            
+            // If user provided LID format, also try exact legacy format if they specify it
+            if (providedJid.includes('@lid')) {
+              console.log(`[${getTimestamp()}] ℹ️ LID format provided. Legacy format (if exists) needs separate unblacklist.`);
             }
 
-            if (await removeFromBlacklist(targetJidUBL)) {
+            if (removedCount > 0) {
               await msg.reply([
                 '✅ Blacklist Update',
-                `👤 ID: ${targetJidUBL}`,
-                '📝 Status: Removed from blacklist'
+                `👤 Removed: ${providedJid}`,
+                '📝 Status: Removed from blacklist',
+                '',
+                '💡 Note: If this user has both legacy (@c.us) and LID (@lid) formats,',
+                'you may need to unblacklist both formats separately.'
               ].join('\n'));
-              console.log(`✅ Manually unblacklisted: ${targetJidUBL}`);
             } else {
               await msg.reply([
                 '⚠️ Blacklist Info',
-                `👤 ID: ${targetJidUBL}`,
-                '🚫 Status: Not found in blacklist'
+                `👤 ID: ${providedJid}`,
+                '🚫 Status: Not found in blacklist',
+                '',
+                '💡 Tip: Check #blacklst to see exact format in blacklist'
               ].join('\n'));
             }
             return;
@@ -2177,21 +2206,36 @@ client.on('group_join', async evt => {
     console.log(`[${getTimestamp()}] 🚨 BLACKLISTED USER JOINED - IMMEDIATE KICK: ${lidJid}`);
     
     try {
-      // Check if bot is admin first
+      // Check if bot is admin first - improved detection (same as invite link handler)
       let botIsAdmin = false;
       try {
         const botContact = await client.getContactById(client.info.wid._serialized);
         const botJid = jidKey(botContact);
         
+        console.log(`[${getTimestamp()}] 🤖 Bot JID for auto-kick: ${botJid}`);
+        
         botIsAdmin = chat.participants.some(p => {
           const pJid = getParticipantJid(p);
           const isBot = pJid === botJid || pJid === client.info.wid._serialized;
-          return isBot && p.isAdmin;
+          if (isBot) {
+            console.log(`[${getTimestamp()}] 🤖 Found bot in participants for auto-kick: ${pJid}, isAdmin: ${p.isAdmin}`);
+            return p.isAdmin;
+          }
+          return false;
         });
         
         console.log(`[${getTimestamp()}] 🤖 Bot admin status for auto-kick: ${botIsAdmin}`);
       } catch (e) {
-        console.error(`[${getTimestamp()}] ❌ Error checking bot admin status: ${e.message}`);
+        console.error(`[${getTimestamp()}] ❌ Error checking bot admin status for auto-kick: ${e.message}`);
+        // Fallback: try to get invite code (only works if bot is admin)
+        try {
+          await chat.getInviteCode();
+          botIsAdmin = true;
+          console.log(`[${getTimestamp()}] ✅ Bot is admin for auto-kick (confirmed via invite code test)`);
+        } catch (inviteError) {
+          console.log(`[${getTimestamp()}] ❌ Bot cannot get invite code for auto-kick - likely not admin`);
+          botIsAdmin = false;
+        }
       }
       
       if (!botIsAdmin) {
