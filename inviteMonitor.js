@@ -299,6 +299,7 @@ client.on('ready', async () => {
 
    console.log(`[${getTimestamp()}] Version 1.4.3 - TARGETED DEBUG for 972555030746: Enhanced auto-kick debugging for specific blacklisted user`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
+   console.log(`[${getTimestamp()}] Version 1.5.0 - COMPREHENSIVE SWEEP SYSTEM: No matter how long it takes blacklist enforcement with multiple detection methods`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
 
@@ -2395,3 +2396,323 @@ client.on('browser_close', () => {
 });
 
 startBot();
+
+/* ───────────── COMPREHENSIVE BLACKLIST SWEEP SYSTEM ───────────── */
+// "No matter how long it takes" approach - thoroughness over speed
+
+// Enhanced kick function with comprehensive checking (no time pressure)
+async function kickBlacklistedUser(chat, userId, source = 'unknown') {
+  const startTime = Date.now();
+  console.log(`[${getTimestamp()}] 🎯 SWEEP: Starting comprehensive blacklist check for ${userId} (from: ${source})`);
+  
+  try {
+    // Get user contact with retry logic
+    let contact = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        contact = await client.getContactById(userId);
+        if (contact) {
+          console.log(`[${getTimestamp()}] ✅ SWEEP: Got contact on attempt ${attempt}`);
+          break;
+        }
+      } catch (e) {
+        console.log(`[${getTimestamp()}] ⚠️ SWEEP: Contact fetch attempt ${attempt} failed: ${e.message}`);
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    if (!contact) {
+      console.log(`[${getTimestamp()}] ❌ SWEEP: Could not get contact for ${userId} after 3 attempts`);
+      return false;
+    }
+
+    // Get both JID formats for comprehensive checking
+    const legacyJid = jidKey(contact);
+    const lidJid = userId;
+    
+    console.log(`[${getTimestamp()}] 🔍 SWEEP: Checking all formats for ${describeContact(contact)}`);
+    console.log(`[${getTimestamp()}] 🔍 SWEEP: Legacy: ${legacyJid}`);
+    console.log(`[${getTimestamp()}] 🔍 SWEEP: LID: ${lidJid}`);
+
+    // Comprehensive blacklist check (with retries if needed)
+    let isLegacyBlacklisted = false;
+    let isLidBlacklisted = false;
+    
+    try {
+      isLegacyBlacklisted = await isBlacklisted(legacyJid);
+      isLidBlacklisted = await isBlacklisted(lidJid);
+    } catch (e) {
+      console.log(`[${getTimestamp()}] ⚠️ SWEEP: Blacklist check error, retrying... ${e.message}`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        isLegacyBlacklisted = await isBlacklisted(legacyJid);
+        isLidBlacklisted = await isBlacklisted(lidJid);
+      } catch (e2) {
+        console.error(`[${getTimestamp()}] ❌ SWEEP: Blacklist check failed after retry: ${e2.message}`);
+        return false;
+      }
+    }
+
+    const isUserBlacklisted = isLegacyBlacklisted || isLidBlacklisted;
+    
+    console.log(`[${getTimestamp()}] 🚫 SWEEP: Legacy blacklisted: ${isLegacyBlacklisted}`);
+    console.log(`[${getTimestamp()}] 🚫 SWEEP: LID blacklisted: ${isLidBlacklisted}`);
+    console.log(`[${getTimestamp()}] 🚫 SWEEP: USER IS BLACKLISTED: ${isUserBlacklisted}`);
+
+    if (!isUserBlacklisted) {
+      console.log(`[${getTimestamp()}] ✅ SWEEP: User is clean, no action needed`);
+      return false;
+    }
+
+    // User IS blacklisted - proceed with thorough kick process
+    console.log(`[${getTimestamp()}] 🚨 SWEEP: CONFIRMED BLACKLISTED USER - PROCEEDING WITH KICK`);
+
+    // Check bot admin status thoroughly
+    let botIsAdmin = false;
+    try {
+      const botContact = await client.getContactById(client.info.wid._serialized);
+      const botJid = jidKey(botContact);
+      
+      // Check participants list
+      botIsAdmin = chat.participants.some(p => {
+        const pJid = getParticipantJid(p);
+        const isBot = pJid === botJid || pJid === client.info.wid._serialized;
+        if (isBot) {
+          console.log(`[${getTimestamp()}] 🤖 SWEEP: Found bot in participants: ${pJid}, isAdmin: ${p.isAdmin}`);
+          return p.isAdmin;
+        }
+        return false;
+      });
+
+      // Double-check with invite code test
+      if (!botIsAdmin) {
+        try {
+          await chat.getInviteCode();
+          botIsAdmin = true;
+          console.log(`[${getTimestamp()}] 🤖 SWEEP: Bot admin confirmed via invite code test`);
+        } catch (e) {
+          console.log(`[${getTimestamp()}] 🤖 SWEEP: Bot cannot get invite code - not admin`);
+        }
+      }
+    } catch (e) {
+      console.error(`[${getTimestamp()}] ❌ SWEEP: Error checking bot admin status: ${e.message}`);
+    }
+
+    if (!botIsAdmin) {
+      console.log(`[${getTimestamp()}] ⚠️ SWEEP: Cannot kick - bot is not admin in ${chat.name}`);
+      
+      // Alert admin about the issue
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, 
+        `⚠️ *SWEEP: Blacklisted User Detected But Cannot Kick*\n` +
+        `👤 User: ${describeContact(contact)}\n` +
+        `📍 Group: ${chat.name}\n` +
+        `🚫 Reason: Bot is not admin in this group\n` +
+        `📧 Blacklisted: ${legacyJid}\n` +
+        `🕒 Detected via: ${source}`);
+      
+      return false;
+    }
+
+    // Execute the kick (no rush - comprehensive approach)
+    console.log(`[${getTimestamp()}] 🚨 SWEEP: EXECUTING KICK for ${lidJid}`);
+    
+    try {
+      await chat.removeParticipants([lidJid]);
+      console.log(`[${getTimestamp()}] ✅ SWEEP: KICK EXECUTED successfully`);
+      
+      // Verify the kick worked (check if user still in participants)
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for group state to update
+      const stillInGroup = chat.participants.some(p => {
+        const pJid = getParticipantJid(p);
+        return pJid === lidJid || pJid === legacyJid;
+      });
+      
+      if (stillInGroup) {
+        console.log(`[${getTimestamp()}] ⚠️ SWEEP: User still appears in group after kick attempt`);
+      } else {
+        console.log(`[${getTimestamp()}] ✅ SWEEP: Confirmed user removed from group`);
+      }
+
+    } catch (kickError) {
+      console.error(`[${getTimestamp()}] ❌ SWEEP: Kick failed: ${kickError.message}`);
+      
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, 
+        `❌ *SWEEP: Failed to Kick Blacklisted User*\n` +
+        `👤 User: ${describeContact(contact)}\n` +
+        `📍 Group: ${chat.name}\n` +
+        `🚫 Error: ${kickError.message}\n` +
+        `📧 Blacklisted: ${legacyJid}`);
+      
+      return false;
+    }
+
+    // Notify the kicked user
+    try {
+      const messageToUser = [
+        '🚫 הוסרת מהקבוצה מכיוון שמזהה המשתמש שלך מופיע ברשימה השחורה.',
+        '❗ אם אתה חושב שמדובר בטעות, נא ליצור קשר עם מנהל הקבוצה.',
+        `📱 +${ADMIN_PHONE}`
+      ].join('\n');
+      await client.sendMessage(lidJid, messageToUser);
+    } catch (e) {
+      console.log(`[${getTimestamp()}] ⚠️ SWEEP: Could not notify kicked user: ${e.message}`);
+    }
+
+    // Get group URL for admin alert
+    let groupURL = '[URL unavailable]';
+    try {
+      const inviteCode = await chat.getInviteCode();
+      groupURL = `https://chat.whatsapp.com/${inviteCode}`;
+    } catch (e) {
+      console.log(`[${getTimestamp()}] ⚠️ SWEEP: Could not get group invite code`);
+    }
+
+    // Comprehensive alert to admin
+    const duration = Date.now() - startTime;
+    const alert = [
+      '🚨 *SWEEP: Blacklisted User Kicked*',
+      `👤 User: ${describeContact(contact)}`,
+      `📍 Group: ${chat.name}`,
+      `🔗 Group URL: ${groupURL}`,
+      `🕒 Time: ${getTimestamp()}`,
+      `⏱️ Processing time: ${duration}ms`,
+      `🎯 Kicked: ${lidJid}`,
+      `📧 Blacklisted: ${legacyJid}`,
+      `📡 Detection source: ${source}`,
+      '✅ User successfully removed.',
+      '',
+      '🔄 *To unblacklist this user:*'
+    ].join('\n');
+    
+    await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
+    await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${legacyJid}`);
+    
+    console.log(`[${getTimestamp()}] ✅ SWEEP: Complete! Total time: ${duration}ms`);
+    return true;
+
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ SWEEP: Unexpected error: ${error.message}`);
+    return false;
+  }
+}
+
+// Group update handler - catches users added by admins
+client.on('group_update', async (evt) => {
+  try {
+    if (evt.action !== 'add' && evt.action !== 'promote') return;
+    
+    console.log(`[${getTimestamp()}] 👥 Group update detected: ${evt.action}`);
+    
+    const chat = await client.getChatById(evt.id.remote).catch(() => null);
+    if (!chat?.isGroup) return;
+    
+    console.log(`[${getTimestamp()}] 📍 Group: ${chat.name}`);
+    
+    // Check each participant affected by the update
+    for (const participantId of evt.participants) {
+      console.log(`[${getTimestamp()}] 🔍 Checking participant from group_update: ${participantId}`);
+      
+      // Use comprehensive kick function (no time pressure)
+      setTimeout(async () => {
+        await kickBlacklistedUser(chat, participantId, 'group_update');
+      }, 2000); // Delay to let group state settle
+    }
+    
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error in group_update handler: ${error.message}`);
+  }
+});
+
+// Periodic sweep function - runs every 15 minutes
+async function performPeriodicSweep() {
+  console.log(`[${getTimestamp()}] 🔄 PERIODIC SWEEP: Starting comprehensive group scan`);
+  
+  try {
+    const chats = await client.getChats();
+    const groupChats = chats.filter(chat => chat.isGroup);
+    
+    console.log(`[${getTimestamp()}] 🔄 PERIODIC SWEEP: Scanning ${groupChats.length} groups`);
+    
+    for (const chat of groupChats) {
+      try {
+        console.log(`[${getTimestamp()}] 🔍 PERIODIC SWEEP: Checking group ${chat.name} (${chat.participants.length} members)`);
+        
+        // Check each participant in the group
+        for (const participant of chat.participants) {
+          const participantId = getParticipantJid(participant);
+          
+          // Use comprehensive kick function for each member
+          await kickBlacklistedUser(chat, participantId, 'periodic_sweep');
+          
+          // Small delay to avoid overwhelming the system
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+      } catch (groupError) {
+        console.error(`[${getTimestamp()}] ❌ PERIODIC SWEEP: Error scanning group ${chat.name}: ${groupError.message}`);
+      }
+    }
+    
+    console.log(`[${getTimestamp()}] ✅ PERIODIC SWEEP: Complete`);
+    
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ PERIODIC SWEEP: Failed: ${error.message}`);
+  }
+}
+
+// Manual sweep command for admins
+client.on('message', async msg => {
+  try {
+    if (!msg.body || !msg.body.startsWith('#sweep')) return;
+    
+    const contact = await msg.getContact();
+    const senderJid = jidKey(contact);
+    
+    // Check if sender is admin
+    if (senderJid !== `${ADMIN_PHONE}@c.us`) {
+      console.log(`[${getTimestamp()}] ⚠️ Non-admin tried to use #sweep: ${senderJid}`);
+      return;
+    }
+    
+    console.log(`[${getTimestamp()}] 🔧 MANUAL SWEEP: Admin requested sweep via ${senderJid}`);
+    
+    const chat = await msg.getChat();
+    if (!chat.isGroup) {
+      await msg.reply('⚠️ #sweep command only works in groups');
+      return;
+    }
+    
+    await msg.reply('🔄 Starting comprehensive blacklist sweep for this group...');
+    
+    let kickedCount = 0;
+    console.log(`[${getTimestamp()}] 🔧 MANUAL SWEEP: Checking ${chat.participants.length} members in ${chat.name}`);
+    
+    for (const participant of chat.participants) {
+      const participantId = getParticipantJid(participant);
+      const wasKicked = await kickBlacklistedUser(chat, participantId, 'manual_sweep');
+      if (wasKicked) kickedCount++;
+      
+      // Small delay between checks
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    await msg.reply(`✅ Sweep complete! ${kickedCount} blacklisted users were removed.`);
+    console.log(`[${getTimestamp()}] ✅ MANUAL SWEEP: Complete - kicked ${kickedCount} users`);
+    
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error in manual sweep: ${error.message}`);
+  }
+});
+
+// Start periodic sweeps when bot is ready
+client.once('ready', () => {
+  console.log(`[${getTimestamp()}] 🔄 Starting periodic blacklist sweeps (every 15 minutes)`);
+  
+  // Initial sweep after 2 minutes (let bot settle)
+  setTimeout(performPeriodicSweep, 2 * 60 * 1000);
+  
+  // Then every 15 minutes
+  setInterval(performPeriodicSweep, 15 * 60 * 1000);
+});
+
+/* ───────────── GLOBAL ERROR HANDLERS ───────────── */
