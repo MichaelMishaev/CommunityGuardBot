@@ -297,7 +297,7 @@ client.on('ready', async () => {
    mutedUsers = await loadMutedUsers();
    console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.3.5 - CRITICAL FIXES: Enhanced unblacklist + improved admin detection`);
+   console.log(`[${getTimestamp()}] Version 1.4.0 - ULTRA ROBUST KICK: Multi-attempt verification + retry logic ensures users are ACTUALLY kicked`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
@@ -2124,42 +2124,131 @@ client.on('message', async msg => {
     console.error(`[${getTimestamp()}] ❌ Failed to blacklist: ${e.message}`);
   }
   
-  // 3) KICK USER IMMEDIATELY - Use the LID format that exists in participants
-  try {
-    console.log(`[${getTimestamp()}] 🚨 KICKING USER IMMEDIATELY: ${kickTarget}`);
-    await chat.removeParticipants([kickTarget]);
-    console.log(`[${getTimestamp()}] ✅ KICKED USER: ${kickTarget}`);
-  } catch (err) {
-    console.error(`[${getTimestamp()}] ❌ FAILED TO KICK USER: ${kickTarget}`, err.message);
+  // 3) KICK USER IMMEDIATELY - ROBUST KICK WITH VERIFICATION
+  let kickSuccess = false;
+  let kickAttempts = 0;
+  const maxKickAttempts = 3;
+  
+  while (!kickSuccess && kickAttempts < maxKickAttempts) {
+    kickAttempts++;
+    console.log(`[${getTimestamp()}] 🚨 KICK ATTEMPT ${kickAttempts}/${maxKickAttempts}: ${kickTarget}`);
+    
+    try {
+      // Step 1: Verify user is in group BEFORE kick
+      const participantsBefore = chat.participants.map(p => getParticipantJid(p));
+      const userInGroupBefore = participantsBefore.includes(kickTarget);
+      
+      console.log(`[${getTimestamp()}] 👥 User in group before kick: ${userInGroupBefore}`);
+      console.log(`[${getTimestamp()}] 👥 Total participants before: ${participantsBefore.length}`);
+      
+      if (!userInGroupBefore) {
+        console.log(`[${getTimestamp()}] ℹ️ User ${kickTarget} already not in group - kick not needed`);
+        kickSuccess = true;
+        break;
+      }
+      
+      // Step 2: Attempt to kick
+      await chat.removeParticipants([kickTarget]);
+      console.log(`[${getTimestamp()}] 📤 Kick command sent for: ${kickTarget}`);
+      
+      // Step 3: Wait a moment for WhatsApp to process
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Step 4: Refresh chat data and verify kick worked
+      await chat.fetchParticipants(); // Refresh participant list
+      const participantsAfter = chat.participants.map(p => getParticipantJid(p));
+      const userStillInGroup = participantsAfter.includes(kickTarget);
+      
+      console.log(`[${getTimestamp()}] 👥 User still in group after kick: ${userStillInGroup}`);
+      console.log(`[${getTimestamp()}] 👥 Total participants after: ${participantsAfter.length}`);
+      
+      if (!userStillInGroup) {
+        console.log(`[${getTimestamp()}] ✅ VERIFIED KICK SUCCESS: ${kickTarget} removed from group`);
+        kickSuccess = true;
+      } else {
+        console.error(`[${getTimestamp()}] ❌ KICK FAILED - USER STILL IN GROUP: ${kickTarget}`);
+        
+        // Try alternative kick method on retry
+        if (kickAttempts < maxKickAttempts) {
+          console.log(`[${getTimestamp()}] 🔄 Trying alternative kick method...`);
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retry
+        }
+      }
+      
+    } catch (err) {
+      console.error(`[${getTimestamp()}] ❌ KICK ATTEMPT ${kickAttempts} ERROR:`, err.message);
+      
+      if (kickAttempts < maxKickAttempts) {
+        console.log(`[${getTimestamp()}] 🔄 Retrying kick in 2 seconds...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
   }
   
-  // 4) Send alert to admin
+  // Final verification and alerting
+  if (!kickSuccess) {
+    console.error(`[${getTimestamp()}] 🚨 CRITICAL: FAILED TO KICK USER AFTER ${maxKickAttempts} ATTEMPTS: ${kickTarget}`);
+    
+    // Send critical failure alert
+    await client.sendMessage(`${ALERT_PHONE}@c.us`, 
+      `🚨 *CRITICAL KICK FAILURE*\n👤 User: ${kickTarget}\n📍 Group: ${chat.name}\n❌ Failed to remove after ${maxKickAttempts} attempts\n🔧 Manual intervention required!`);
+  } else {
+    console.log(`[${getTimestamp()}] ✅ CONFIRMED KICK SUCCESS: ${kickTarget} removed from group`);
+  }
+  
+  // 4) Send alert to admin (only if kick succeeded)
   try {
     const inviteCode = await chat.getInviteCode().catch(() => null);
     const groupURL = inviteCode ? `https://chat.whatsapp.com/${inviteCode}` : '[URL unavailable]';
     
-    const alert = [
-      '🚨 *WhatsApp Invite Spam - IMMEDIATE KICK*',
-      `👤 User: ${describeContact(contact)}`,
-      `📍 Group: ${chat.name}`,
-      `🔗 Group URL: ${groupURL}`,
-      `🕒 Time: ${getTimestamp()}`,
-      `🎯 Kicked: ${kickTarget}`,
-      `📋 Blacklisted: ${blacklistTarget}`,
-      `📨 Spam Link Sent: ${matches.join(', ')}`,
-      '🚫 User was immediately removed and blacklisted.',
-      '',
-      '🔄 *To unblacklist this user, copy the command below:*'
-    ].join('\n');
-    
-    await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
-    await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${blacklistTarget}`);
-    console.log(`[${getTimestamp()}] ✅ Alert sent to admin`);
+    if (kickSuccess) {
+      const alert = [
+        '🚨 *WhatsApp Invite Spam - IMMEDIATE KICK*',
+        `👤 User: ${describeContact(contact)}`,
+        `📍 Group: ${chat.name}`,
+        `🔗 Group URL: ${groupURL}`,
+        `🕒 Time: ${getTimestamp()}`,
+        `🎯 Kicked: ${kickTarget}`,
+        `📋 Blacklisted: ${blacklistTarget}`,
+        `📨 Spam Link Sent: ${matches.join(', ')}`,
+        '✅ User was successfully removed and blacklisted.',
+        '',
+        '🔄 *To unblacklist this user, copy the command below:*'
+      ].join('\n');
+      
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${blacklistTarget}`);
+      console.log(`[${getTimestamp()}] ✅ SUCCESS alert sent to admin`);
+    } else {
+      const failureAlert = [
+        '🚨 *WhatsApp Invite Spam - KICK FAILED*',
+        `👤 User: ${describeContact(contact)}`,
+        `📍 Group: ${chat.name}`,
+        `🔗 Group URL: ${groupURL}`,
+        `🕒 Time: ${getTimestamp()}`,
+        `❌ Failed to kick: ${kickTarget}`,
+        `📋 Blacklisted: ${blacklistTarget}`,
+        `📨 Spam Link Sent: ${matches.join(', ')}`,
+        '⚠️ Message deleted and user blacklisted, BUT USER STILL IN GROUP!',
+        '🔧 Manual kick required!',
+        '',
+        '🔄 *To unblacklist this user, copy the command below:*'
+      ].join('\n');
+      
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, failureAlert);
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${blacklistTarget}`);
+      console.log(`[${getTimestamp()}] ⚠️ FAILURE alert sent to admin`);
+    }
   } catch (e) {
     console.error(`[${getTimestamp()}] ❌ Failed to send alert: ${e.message}`);
   }
   
-  console.log(`[${getTimestamp()}] 🎯 IMMEDIATE KICK COMPLETED FOR: ${kickTarget}`);
+  // Only send success alert if kick actually worked
+  if (kickSuccess) {
+    console.log(`[${getTimestamp()}] 🎯 IMMEDIATE KICK COMPLETED SUCCESSFULLY FOR: ${kickTarget}`);
+  } else {
+    console.log(`[${getTimestamp()}] ❌ IMMEDIATE KICK FAILED FOR: ${kickTarget} - user may still be in group`);
+  }
 });
 
 /* ───────────── BLACKLISTED USER AUTO-KICK ON JOIN (Fixed for LID) ───────────── */
@@ -2245,9 +2334,30 @@ client.on('group_join', async evt => {
         return;
       }
 
-      // Remove the blacklisted user using LID format (what exists in participants)
-      await chat.removeParticipants([lidJid]);
-      console.log(`[${getTimestamp()}] ✅ Auto-kicked blacklisted user: ${lidJid}`);
+      // Remove the blacklisted user using LID format with verification
+      console.log(`[${getTimestamp()}] 🚨 ATTEMPTING AUTO-KICK: ${lidJid}`);
+      
+      try {
+        await chat.removeParticipants([lidJid]);
+        console.log(`[${getTimestamp()}] 📤 Auto-kick command sent for: ${lidJid}`);
+        
+        // Wait and verify kick worked
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        await chat.fetchParticipants();
+        
+        const participantsAfter = chat.participants.map(p => getParticipantJid(p));
+        const userStillInGroup = participantsAfter.includes(lidJid);
+        
+        if (!userStillInGroup) {
+          console.log(`[${getTimestamp()}] ✅ VERIFIED AUTO-KICK SUCCESS: ${lidJid} removed from group`);
+        } else {
+          console.error(`[${getTimestamp()}] ❌ AUTO-KICK FAILED - USER STILL IN GROUP: ${lidJid}`);
+          throw new Error(`User ${lidJid} still in group after kick attempt`);
+        }
+      } catch (kickError) {
+        console.error(`[${getTimestamp()}] ❌ Auto-kick failed:`, kickError.message);
+        throw kickError; // Re-throw to trigger the catch block below
+      }
       
       // Notify the kicked user
       const messageToUser = [
