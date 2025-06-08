@@ -1,6 +1,6 @@
 {
   "name": "botcommunityguard",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "WhatsApp bot to guard against group invites and foreign numbers",
   "main": "inviteMonitor.js",
   "scripts": {

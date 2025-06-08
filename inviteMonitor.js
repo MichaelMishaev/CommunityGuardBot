@@ -297,7 +297,7 @@ client.on('ready', async () => {
    mutedUsers = await loadMutedUsers();
    console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.4.2 - ENHANCED AUTO-KICK DEBUGGING: Added detailed logs for blacklist join detection`);
+   console.log(`[${getTimestamp()}] Version 1.4.3 - TARGETED DEBUG for 972555030746: Enhanced auto-kick debugging for specific blacklisted user`);
    console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
@@ -2196,6 +2196,20 @@ client.on('group_join', async evt => {
   console.log(`[${getTimestamp()}] 👤 Contact info: ${describeContact(contact)}`);
   console.log(`[${getTimestamp()}] 📧 Legacy JID: ${legacyJid}`);
   console.log(`[${getTimestamp()}] 🆔 LID JID: ${lidJid}`);
+  console.log(`[${getTimestamp()}] 🔍 Contact number: ${contact?.number || 'N/A'}`);
+  console.log(`[${getTimestamp()}] 🔍 Contact pushname: ${contact?.pushname || 'N/A'}`);
+  console.log(`[${getTimestamp()}] 🔍 Raw participant ID: ${pid}`);
+
+  // **SPECIAL DEBUG FOR 972555030746**
+  if (legacyJid.includes('972555030746') || lidJid.includes('972555030746') || contact?.number?.includes('972555030746')) {
+    console.log(`[${getTimestamp()}] 🚨 DETECTED 972555030746 USER JOINING!`);
+    console.log(`[${getTimestamp()}] 🔍 All contact properties:`, JSON.stringify(contact, null, 2));
+    console.log(`[${getTimestamp()}] 🔍 Trying different JID formats:`);
+    console.log(`[${getTimestamp()}] 🔍   - legacyJid: ${legacyJid}`);
+    console.log(`[${getTimestamp()}] 🔍   - lidJid: ${lidJid}`);
+    console.log(`[${getTimestamp()}] 🔍   - contact.id._serialized: ${contact?.id?._serialized}`);
+    console.log(`[${getTimestamp()}] 🔍   - contact._serialized: ${contact?._serialized}`);
+  }
 
   // Check if EITHER format is blacklisted
   const isLegacyBlacklisted = await isBlacklisted(legacyJid);
