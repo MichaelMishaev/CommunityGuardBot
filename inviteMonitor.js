@@ -874,7 +874,7 @@ if (cleaned === '#help') {
       '10. *#ban* - Ban a user permanently (reply to message, adds to blacklist)',
       '11. *#cf* - Check for foreign numbers in the group',
       '12. *#mute [minutes]* - Mute the entire group for the specified number of minutes\n    (admin only)',
-      '13. *#mute (reply) [minutes]* - Mute a specific user for the specified number of minutes\n    (admin only), kicked out if they send more than 10 messages while muted',
+      '13. *#mute (reply) [minutes]* - Mute a specific user for the specified number of minutes\n    (admin only), their messages will be silently deleted during mute period',
       '14. *#botkick* - Quick cleanup: kick all blacklisted users (any admin)',
       '15. *#sweep* - Comprehensive blacklist scan with detailed reporting (super admin only)',
       '16. *#warn* - Send a warning to a user (reply to their message, admin only)',
@@ -2020,24 +2020,11 @@ client.on('message', async msg => {
     const count = (mutedMsgCounts.get(author) || 0) + 1;
     mutedMsgCounts.set(author, count);
 
-    // 2) If over 10 messages while muted → kick
-    if (count > 10) {
-      const kickSuccess = await robustKickUser(chat, author, 'mute violation');
-      if (kickSuccess) {
-        await chat.sendMessage(
-          `🚨 המשתמש @${author.split('@')[0]} הורחק בשל הפרת כללי הקבוצה.`
-        );
-        console.log(`[${getTimestamp()}] ✅ Kicked @${author.split('@')[0]} after ${count} muted messages.`);
-      } else {
-        console.error(`[${getTimestamp()}] ❌ Failed to kick user for mute violation: ${author}`);
-      }
-      // clean up their state
-      mutedUsers.delete(author);
-      mutedMsgCounts.delete(author);
-      return;
-    }
+    // 2) Just continue to delete messages - no kicking during mute period
+    // Log the violation count for admin reference
+    console.log(`[${getTimestamp()}] 🗑️ Deleting message #${count} from muted user @${author.split('@')[0]}`);
 
-    // 3) Otherwise still under limit → shadow-delete
+    // 3) Shadow-delete the message
     try {
       await msg.delete(true);
       console.log(
