@@ -875,31 +875,36 @@ if (cleaned === '#help') {
       '11. *#cf* - Check for foreign numbers in the group',
       '12. *#mute [minutes]* - Mute the entire group for the specified number of minutes\n    (admin only)',
       '13. *#mute (reply) [minutes]* - Mute a specific user for the specified number of minutes\n    (admin only), kicked out if they send more than 3 messages while muted',
-      '14. *#botkick* - Automatically kick out all blacklisted users from the current group',
-      '15. *#warn* - Send a warning to a user (reply to their message, admin only)',
-      '16. *#clear* - Delete last 10 messages from a user (reply to their message)',
-      '17. *#cleartest* - Test bot\'s message deletion capabilities (admin only)',
-      '18. *#cleardebug* - Debug message author detection (reply to message)',
+      '14. *#botkick* - Quick cleanup: kick all blacklisted users (any admin)',
+      '15. *#sweep* - Comprehensive blacklist scan with detailed reporting (super admin only)',
+      '16. *#warn* - Send a warning to a user (reply to their message, admin only)',
+      '17. *#clear* - Delete last 10 messages from a user (reply to their message)',
+      '18. *#cleartest* - Test bot\'s message deletion capabilities (admin only)',
+      '19. *#cleardebug* - Debug message author detection (reply to message)',
       '',
       '*👑 Super Admin Commands:*',
-      '19. *#promote* - Promote a user to admin (reply to their message, super admin only)',
-      '20. *#demote* - Demote an admin to regular user (reply to their message, super admin only)',
+      '20. *#promote* - Promote a user to admin (reply to their message, super admin only)',
+      '21. *#demote* - Demote an admin to regular user (reply to their message, super admin only)',
       '',
       '*📢 Communication Commands:*',
-      '21. *#announce [message]* - Send an announcement to all group members (admin only)',
-      '22. *#pin [days]* - Pin a message (reply to message, default 7 days, admin only)',
-      '23. *#translate* - Translate a message to Hebrew (reply to message or provide text)',
+      '22. *#announce [message]* - Send an announcement to all group members (admin only)',
+      '23. *#pin [days]* - Pin a message (reply to message, default 7 days, admin only)',
+      '24. *#translate* - Translate a message to Hebrew (reply to message or provide text)',
       '',
       '*📊 Information Commands:*',
-      '24. *#stats* - Show group statistics (member count, admin count, etc.)',
-      '25. *#commands* - Display all loaded custom commands from Firestore',
-      '26. *#help* - Show this help message',
+      '25. *#stats* - Show group statistics (member count, admin count, etc.)',
+      '26. *#commands* - Display all loaded custom commands from Firestore',
+      '27. *#help* - Show this help message',
       '',
       '*🔄 Recovery Commands:*',
-      '27. *#unb [number]* - Unban a previously banned number\n    (e.g., #unb 972555123456), must be as a reply to a bot message',
+      '28. *#unb [number]* - Unban a previously banned number\n    (e.g., #unb 972555123456), must be as a reply to a bot message',
       '',
       '💡 *Note:* Use these commands responsibly to ensure group safety and proper user behavior.',
       '⚠️ *WhatsApp URLs:* When someone posts a WhatsApp group link, they are automatically kicked and blacklisted.',
+      '',
+      '🆚 *#botkick vs #sweep:*',
+      '• *#botkick* - Fast cleanup, any admin can use',
+      '• *#sweep* - Detailed scan with full reporting, super admin only',
     ];
 
     // Add dynamically loaded commands from Firestore
@@ -2863,6 +2868,9 @@ client.on('message', async msg => {
 });
 
 // Start periodic sweeps when bot is ready
+// DISABLED: Automatic sweep caused AWS performance issues
+// Use manual #sweep command instead
+/*
 client.once('ready', () => {
   console.log(`[${getTimestamp()}] 🔄 Starting periodic blacklist sweeps (every 15 minutes)`);
   
@@ -2872,5 +2880,6 @@ client.once('ready', () => {
   // Then every 15 minutes
   setInterval(performPeriodicSweep, 15 * 60 * 1000);
 });
+*/
 
 /* ───────────── GLOBAL ERROR HANDLERS ───────────── */
