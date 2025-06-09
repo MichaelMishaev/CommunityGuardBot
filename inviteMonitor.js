@@ -2786,43 +2786,6 @@ client.on('group_update', async (evt) => {
   }
 });
 
-// Periodic sweep function - runs every 15 minutes
-async function performPeriodicSweep() {
-  console.log(`[${getTimestamp()}] 🔄 PERIODIC SWEEP: Starting comprehensive group scan`);
-  
-  try {
-    const chats = await client.getChats();
-    const groupChats = chats.filter(chat => chat.isGroup);
-    
-    console.log(`[${getTimestamp()}] 🔄 PERIODIC SWEEP: Scanning ${groupChats.length} groups`);
-    
-    for (const chat of groupChats) {
-      try {
-        console.log(`[${getTimestamp()}] 🔍 PERIODIC SWEEP: Checking group ${chat.name} (${chat.participants.length} members)`);
-        
-        // Check each participant in the group
-        for (const participant of chat.participants) {
-          const participantId = getParticipantJid(participant);
-          
-          // Use comprehensive kick function for each member
-          await kickBlacklistedUser(chat, participantId, 'periodic_sweep');
-          
-          // Small delay to avoid overwhelming the system
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-        
-      } catch (groupError) {
-        console.error(`[${getTimestamp()}] ❌ PERIODIC SWEEP: Error scanning group ${chat.name}: ${groupError.message}`);
-      }
-    }
-    
-    console.log(`[${getTimestamp()}] ✅ PERIODIC SWEEP: Complete`);
-    
-  } catch (error) {
-    console.error(`[${getTimestamp()}] ❌ PERIODIC SWEEP: Failed: ${error.message}`);
-  }
-}
-
 // Manual sweep command for admins
 client.on('message', async msg => {
   try {
@@ -2867,19 +2830,7 @@ client.on('message', async msg => {
   }
 });
 
-// Start periodic sweeps when bot is ready
-// DISABLED: Automatic sweep caused AWS performance issues
-// Use manual #sweep command instead
-/*
-client.once('ready', () => {
-  console.log(`[${getTimestamp()}] 🔄 Starting periodic blacklist sweeps (every 15 minutes)`);
-  
-  // Initial sweep after 2 minutes (let bot settle)
-  setTimeout(performPeriodicSweep, 2 * 60 * 1000);
-  
-  // Then every 15 minutes
-  setInterval(performPeriodicSweep, 15 * 60 * 1000);
-});
-*/
+// AUTOMATIC SWEEP COMPLETELY DISABLED
+// Use manual #sweep command only to prevent AWS performance issues
 
 /* ───────────── GLOBAL ERROR HANDLERS ───────────── */

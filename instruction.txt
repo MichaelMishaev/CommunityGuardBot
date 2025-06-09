@@ -1,3 +1,33 @@
+when do git pull in the middle of pm2:
+# 1. Navigate to your bot directory
+cd ~/guard1
+
+# 2. Pull latest changes
+git pull
+
+# 3. Install any new dependencies (if package.json changed)
+npm install
+
+# 4. Restart bot with PM2 (no need to stop first!)
+pm2 restart community-guard
+
+# 5. Check if everything is working
+pm2 status
+pm2 logs community-guard --lines 10
+
+--pm2 start inviteMonitor.js --name "community-guard"
+
+IN ONE LINE:
+cd ~/CommunityGuardBot && git pull && npm install && pm2 restart community-guard && pm2 logs community-guard --lines 50
+
+
+
+-------------
+Watch n aws:
+pm2 logs community-guard --lines 50
+
+---------------------------------------------------------------------
+
 transfer one file:
 new bot (guard1) inly inviteMonitor copy:
 scp -i ~/.ssh/id_ed25519 /d/WebApps/CommunityGuard_02062025/* ec2-user@44.204.100.194:~/guard1/
