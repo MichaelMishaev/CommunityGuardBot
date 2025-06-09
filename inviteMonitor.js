@@ -120,12 +120,10 @@ async function processUserMessages(userId, chatId) {
         }
       }
       
-      // Kick user (same method as #kick command)
-      try {
-        await chat.removeParticipants([userId]);
-        console.log(`[${getTimestamp()}] ✅ Kicked user: ${userId}`);
-      } catch (err) {
-        console.error(`[${getTimestamp()}] ❌ Failed to kick user:`, err.message);
+      // Kick user using robust method
+      const kickSuccess = await robustKickUser(chat, userId, 'invite link detection');
+      if (!kickSuccess) {
+        console.error(`[${getTimestamp()}] ❌ Robust kick failed for invite spammer: ${userId}`);
       }
       
       // Send single alert to admin
@@ -334,6 +332,65 @@ function getParticipantJid(participant) {
     return `${participant.id.user}@${server}`;
   }
   return null;
+}
+
+// Robust kick function to prevent "expected at least 1 children" errors
+async function robustKickUser(chat, userId, reason = '') {
+  try {
+    // Validate user ID format
+    if (!userId || userId.length < 10 || !userId.includes('@')) {
+      console.error(`[${getTimestamp()}] ❌ Invalid user ID format: ${userId}`);
+      return false;
+    }
+    
+    // Check if user is still in group
+    const userInGroup = chat.participants.some(p => {
+      const pJid = getParticipantJid(p);
+      return pJid === userId;
+    });
+    
+    if (!userInGroup) {
+      console.log(`[${getTimestamp()}] ℹ️ User ${userId} not in group - already removed`);
+      return true; // Consider successful since user is not in group
+    }
+    
+    console.log(`[${getTimestamp()}] 🎯 Attempting to kick ${userId}${reason ? ` (${reason})` : ''}`);
+    await chat.removeParticipants([userId]);
+    console.log(`[${getTimestamp()}] ✅ Successfully kicked user: ${userId}`);
+    return true;
+    
+  } catch (err) {
+    console.error(`[${getTimestamp()}] ❌ Failed to kick user ${userId}: ${err.message}`);
+    
+    // If "expected at least 1 children" error, try refreshing and retry
+    if (err.message.includes('expected at least 1 children')) {
+      try {
+        console.log(`[${getTimestamp()}] 🔄 Refreshing group data and retrying kick...`);
+        await chat.fetchMessages();
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Check if user still exists after refresh
+        const stillExists = chat.participants.some(p => {
+          const pJid = getParticipantJid(p);
+          return pJid === userId;
+        });
+        
+        if (stillExists) {
+          await chat.removeParticipants([userId]);
+          console.log(`[${getTimestamp()}] ✅ Kicked user after refresh: ${userId}`);
+          return true;
+        } else {
+          console.log(`[${getTimestamp()}] ℹ️ User ${userId} already removed after refresh`);
+          return true;
+        }
+      } catch (retryErr) {
+        console.error(`[${getTimestamp()}] ❌ Retry kick also failed: ${retryErr.message}`);
+        return false;
+      }
+    }
+    
+    return false;
+  }
 }
 
 // Enhanced helper to get message author with LID support
@@ -709,10 +766,10 @@ if (cmd === '#botkick') {
           continue;
         }
 
-        try {
-          // remove them
-          await chat.removeParticipants([participantJid]);
-
+        // Use robust kick method
+        const kickSuccess = await robustKickUser(chat, participantJid, 'botkick command');
+        
+        if (kickSuccess) {
           // assume success if no exception
           kickedUsers.push(userLabel);
 
@@ -725,11 +782,11 @@ if (cmd === '#botkick') {
           await client.sendMessage(participantJid, kickMessage);
 
           console.log(`[${getTimestamp()}] ✅ Kicked blacklisted user: ${userLabel}`);
-        } catch (err) {
-          console.error(`[${getTimestamp()}] ❌ Failed to kick ${userLabel}:`, err.message);
+        } else {
+          console.error(`[${getTimestamp()}] ❌ Failed to kick ${userLabel}: robust kick failed`);
           await client.sendMessage(
             `${ALERT_PHONE}@c.us`,
-            `❌ Failed to kick blacklisted user ${userLabel}: ${err.message}`
+            `❌ Failed to kick blacklisted user ${userLabel}: robust kick failed`
           );
         }
       }
@@ -1187,12 +1244,10 @@ if (msg.fromMe && cmd === '#kick' && msg.hasQuotedMsg) {
     console.error(`[${getTimestamp()}] ❌ Failed to delete command message: ${e.message}`);
   }
 
-  // 4) Kick the user
-  try { 
-    await chat.removeParticipants([target]); 
-    console.log(`[${getTimestamp()}] ✅ Kicked user: ${target}`);
-  } catch (err) { 
-    console.error(`[${getTimestamp()}] ❌ Failed to kick user:`, err.message);
+  // 4) Kick the user using robust method
+  const kickSuccess = await robustKickUser(chat, target, 'manual kick command');
+  if (!kickSuccess) {
+    console.error(`[${getTimestamp()}] ❌ Robust kick failed for: ${target}`);
   }
 
   // 5) Build Group URL
@@ -1303,12 +1358,12 @@ if (msg.hasQuotedMsg && cmd === '#ban') {
             console.log(`[${getTimestamp()}] ✅ User ${targetJid} added to blacklist`);
         }
         
-        // 3) Kick the user
-        try {
-            await chat.removeParticipants([target]);
+        // 3) Kick the user using robust method
+        const kickSuccess = await robustKickUser(chat, target, 'ban command');
+        if (kickSuccess) {
             console.log(`[${getTimestamp()}] ✅ Banned and kicked user: ${target}`);
-        } catch (e) {
-            console.error(`[${getTimestamp()}] ❌ Failed to kick user: ${e.message}`);
+        } else {
+            console.error(`[${getTimestamp()}] ❌ Failed to kick user during ban: ${target}`);
         }
         
         // 4) Send ban notification to user
@@ -1962,14 +2017,14 @@ client.on('message', async msg => {
 
     // 2) If over 3 messages while muted → kick
     if (count > 3) {
-      try {
-        await chat.removeParticipants([author]);
+      const kickSuccess = await robustKickUser(chat, author, 'mute violation');
+      if (kickSuccess) {
         await chat.sendMessage(
           `🚨 המשתמש @${author.split('@')[0]} הורחק בשל הפרת כללי הקבוצה.`
         );
         console.log(`[${getTimestamp()}] ✅ Kicked @${author.split('@')[0]} after ${count} muted messages.`);
-      } catch (e) {
-        console.error(`[${getTimestamp()}] ❌ Failed to kick user:`, e.message);
+      } else {
+        console.error(`[${getTimestamp()}] ❌ Failed to kick user for mute violation: ${author}`);
       }
       // clean up their state
       mutedUsers.delete(author);
@@ -2125,13 +2180,13 @@ client.on('message', async msg => {
     console.error(`[${getTimestamp()}] ❌ Failed to blacklist: ${e.message}`);
   }
   
-  // 3) KICK USER IMMEDIATELY - SIMPLE AND WORKING METHOD
-  try {
-    console.log(`[${getTimestamp()}] 🚨 KICKING USER IMMEDIATELY: ${kickTarget}`);
-    await chat.removeParticipants([kickTarget]);
+  // 3) KICK USER IMMEDIATELY - ROBUST METHOD
+  console.log(`[${getTimestamp()}] 🚨 KICKING USER IMMEDIATELY: ${kickTarget}`);
+  const kickSuccess = await robustKickUser(chat, kickTarget, 'invite link spam');
+  if (kickSuccess) {
     console.log(`[${getTimestamp()}] ✅ KICKED USER: ${kickTarget}`);
-  } catch (err) {
-    console.error(`[${getTimestamp()}] ❌ FAILED TO KICK USER: ${kickTarget}`, err.message);
+  } else {
+    console.error(`[${getTimestamp()}] ❌ FAILED TO KICK USER: ${kickTarget}`);
   }
   
   // 4) Send alert to admin
@@ -2274,10 +2329,14 @@ client.on('group_join', async evt => {
 
       console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with auto-kick`);
       
-      // Remove the blacklisted user using LID format (simple method)
+      // Remove the blacklisted user using robust method
       console.log(`[${getTimestamp()}] 🚨 EXECUTING AUTO-KICK: ${lidJid}`);
-      await chat.removeParticipants([lidJid]);
-      console.log(`[${getTimestamp()}] ✅ AUTO-KICK COMMAND SENT for: ${lidJid}`);
+      const kickSuccess = await robustKickUser(chat, lidJid, 'auto-kick on join');
+      if (kickSuccess) {
+        console.log(`[${getTimestamp()}] ✅ AUTO-KICK SUCCESSFUL for: ${lidJid}`);
+      } else {
+        console.log(`[${getTimestamp()}] ❌ AUTO-KICK FAILED for: ${lidJid}`);
+      }
       
       // Notify the kicked user
       const messageToUser = [
@@ -2513,37 +2572,136 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
       return false;
     }
 
-    // Execute the kick (no rush - comprehensive approach)
-    console.log(`[${getTimestamp()}] 🚨 SWEEP: EXECUTING KICK for ${lidJid}`);
+    // Check if user is actually in the group before attempting kick
+    const userInGroup = chat.participants.some(p => {
+      const pJid = getParticipantJid(p);
+      return pJid === lidJid || pJid === legacyJid;
+    });
     
-    try {
-      await chat.removeParticipants([lidJid]);
-      console.log(`[${getTimestamp()}] ✅ SWEEP: KICK EXECUTED successfully`);
+    if (!userInGroup) {
+      console.log(`[${getTimestamp()}] ℹ️ SWEEP: User ${lidJid} not found in group participants - already removed or never joined`);
       
-      // Verify the kick worked (check if user still in participants)
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for group state to update
-      const stillInGroup = chat.participants.some(p => {
-        const pJid = getParticipantJid(p);
-        return pJid === lidJid || pJid === legacyJid;
-      });
+      // Still send alert but with different message
+      const duration = Date.now() - startTime;
+      const alert = [
+        '⚠️ *SWEEP: Blacklisted User Not in Group*',
+        `👤 User: ${describeContact(contact)}`,
+        `📍 Group: ${chat.name}`,
+        `🕒 Time: ${getTimestamp()}`,
+        `⏱️ Processing time: ${duration}ms`,
+        `🎯 User ID: ${lidJid}`,
+        `📧 Blacklisted: ${legacyJid}`,
+        `📡 Detection source: ${source}`,
+        '🔍 User not found in group participants (already removed or never joined)',
+        '',
+        '🔄 *To unblacklist this user:*'
+      ].join('\n');
       
-      if (stillInGroup) {
-        console.log(`[${getTimestamp()}] ⚠️ SWEEP: User still appears in group after kick attempt`);
-      } else {
-        console.log(`[${getTimestamp()}] ✅ SWEEP: Confirmed user removed from group`);
-      }
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
+      await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${legacyJid}`);
+      
+      return true; // Consider this successful since user is not in group
+    }
 
-    } catch (kickError) {
-      console.error(`[${getTimestamp()}] ❌ SWEEP: Kick failed: ${kickError.message}`);
+    // Execute the kick (comprehensive approach with validation)
+    console.log(`[${getTimestamp()}] 🚨 SWEEP: EXECUTING KICK for ${lidJid} (confirmed in group)`);
+    
+    // Try different user ID formats to maximize success
+    const idsToTry = [lidJid];
+    if (legacyJid !== lidJid) {
+      idsToTry.push(legacyJid);
+    }
+    
+    let kickSuccessful = false;
+    let lastError = null;
+    
+    for (const idToTry of idsToTry) {
+      try {
+        // Validate the ID format before attempting kick
+        if (!idToTry || idToTry.length < 10 || !idToTry.includes('@')) {
+          console.log(`[${getTimestamp()}] ⚠️ SWEEP: Skipping invalid ID format: ${idToTry}`);
+          continue;
+        }
+        
+        console.log(`[${getTimestamp()}] 🎯 SWEEP: Attempting kick with ID: ${idToTry}`);
+        const individualKickSuccess = await robustKickUser(chat, idToTry, `comprehensive sweep - ${source}`);
+        
+        if (individualKickSuccess) {
+          console.log(`[${getTimestamp()}] ✅ SWEEP: KICK EXECUTED successfully with ${idToTry}`);
+          kickSuccessful = true;
+          break;
+        } else {
+          console.log(`[${getTimestamp()}] ❌ SWEEP: Robust kick failed for ${idToTry}`);
+          lastError = new Error('Robust kick method failed');
+        }
+        
+      } catch (kickError) {
+        console.log(`[${getTimestamp()}] ⚠️ SWEEP: Kick attempt failed with ${idToTry}: ${kickError.message}`);
+        lastError = kickError;
+        
+        // If error suggests empty array, try refreshing group info
+        if (kickError.message.includes('expected at least 1 children')) {
+          console.log(`[${getTimestamp()}] 🔄 SWEEP: Refreshing group data and retrying...`);
+          try {
+            await chat.fetchMessages();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Check if user is still in group after refresh
+            const stillExists = chat.participants.some(p => {
+              const pJid = getParticipantJid(p);
+              return pJid === idToTry;
+            });
+            
+            if (!stillExists) {
+              console.log(`[${getTimestamp()}] ℹ️ SWEEP: User ${idToTry} no longer in group after refresh`);
+              kickSuccessful = true;
+              break;
+            }
+            
+            // Try one more time after refresh using robust method
+            const retryKickSuccess = await robustKickUser(chat, idToTry, `comprehensive sweep retry - ${source}`);
+            if (retryKickSuccess) {
+              console.log(`[${getTimestamp()}] ✅ SWEEP: KICK EXECUTED successfully after refresh with ${idToTry}`);
+              kickSuccessful = true;
+              break;
+            } else {
+              console.log(`[${getTimestamp()}] ❌ SWEEP: Robust kick retry also failed for ${idToTry}`);
+              lastError = new Error('Robust kick retry failed');
+            }
+            
+          } catch (retryError) {
+            console.log(`[${getTimestamp()}] ❌ SWEEP: Retry also failed: ${retryError.message}`);
+            lastError = retryError;
+          }
+        }
+      }
+    }
+    
+    if (!kickSuccessful) {
+      console.error(`[${getTimestamp()}] ❌ SWEEP: All kick attempts failed. Last error: ${lastError?.message}`);
       
       await client.sendMessage(`${ALERT_PHONE}@c.us`, 
         `❌ *SWEEP: Failed to Kick Blacklisted User*\n` +
         `👤 User: ${describeContact(contact)}\n` +
         `📍 Group: ${chat.name}\n` +
-        `🚫 Error: ${kickError.message}\n` +
+        `🚫 Error: ${lastError?.message || 'Unknown error'}\n` +
+        `🎯 Tried IDs: ${idsToTry.join(', ')}\n` +
         `📧 Blacklisted: ${legacyJid}`);
       
       return false;
+    }
+    
+    // Verify the kick worked (check if user still in participants)
+    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for group state to update
+    const stillInGroup = chat.participants.some(p => {
+      const pJid = getParticipantJid(p);
+      return pJid === lidJid || pJid === legacyJid;
+    });
+    
+    if (stillInGroup) {
+      console.log(`[${getTimestamp()}] ⚠️ SWEEP: User still appears in group after kick attempt`);
+    } else {
+      console.log(`[${getTimestamp()}] ✅ SWEEP: Confirmed user removed from group`);
     }
 
     // Notify the kicked user
