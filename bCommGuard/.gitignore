@@ -1,0 +1,6 @@
+node_modules/
+baileys_auth_info/
+.env
+*.log
+.DS_Store
+guard1-dbkey.json.backup
