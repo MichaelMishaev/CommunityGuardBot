@@ -11,7 +11,6 @@ function getTimestamp() {
   return new Date().toLocaleString('en-GB', { timeZone: 'Asia/Jerusalem' });
 }
 
-console.log(`[${getTimestamp()}] 🚀 Bot starting... initializing WhatsApp Web`);
 
 // ─────────── Message Processing Queue & Deduplication ───────────
 const messageQueue = new Map(); // Queue for processing messages per user
@@ -24,13 +23,11 @@ const COOLDOWN_DURATION = 10000; // 10 seconds cooldown between actions for same
 // Queue processor
 async function processUserMessages(userId, chatId) {
   if (processingUsers.has(userId)) {
-    console.log(`[${getTimestamp()}] ⚠️ Already processing ${userId}, skipping duplicate`);
     return;
   }
   
   processingUsers.add(userId);
   const userQueue = messageQueue.get(userId) || [];
-  console.log(`[${getTimestamp()}] 🔄 Starting queue processing for ${userId}, queue size: ${userQueue.length}`);
   let messagesToDelete = []; // Move this outside try block
   
   try {
@@ -56,7 +53,6 @@ async function processUserMessages(userId, chatId) {
     for (const msg of messagesToDelete) {
       // Skip if message was already deleted immediately (for invite links)
       if (msg.message._deleted) {
-        console.log(`[${getTimestamp()}] ⏭️ Skipping message ${msg.id} - already deleted`);
         actuallyDeleted++; // Count as deleted for reporting
         continue;
       }
@@ -64,7 +60,6 @@ async function processUserMessages(userId, chatId) {
       try {
         await msg.message.delete(true);
         actuallyDeleted++;
-        console.log(`[${getTimestamp()}] 🗑️ Deleted message ${msg.id} from ${userId}`);
         await new Promise(resolve => setTimeout(resolve, 200)); // Rate limit: 200ms between deletions
       } catch (e) {
         console.error(`[${getTimestamp()}] ❌ Failed to delete message ${msg.id}: ${e.message}`);
@@ -74,21 +69,49 @@ async function processUserMessages(userId, chatId) {
     // Check cooldown before taking action
     const lastAction = userActionCooldown.get(userId);
     if (lastAction && Date.now() - lastAction < COOLDOWN_DURATION) {
-      console.log(`[${getTimestamp()}] ⏳ User ${userId} on cooldown, skipping action`);
       return;
     }
     
     // Take action if needed (only once per user)
-    console.log(`[${getTimestamp()}] 🔍 Queue processing for ${userId}: shouldKick=${shouldKickUser}, shouldBlacklist=${shouldBlacklistUser}, messagesProcessed=${messagesToDelete.length}`);
     
     if (shouldKickUser && shouldBlacklistUser) {
-      console.log(`[${getTimestamp()}] 🚨 Taking action against ${userId} - KICKING AND BLACKLISTING`);
       
       const chat = await client.getChatById(chatId);
-      console.log(`[${getTimestamp()}] 📍 Chat ID: ${chatId}`);
-      console.log(`[${getTimestamp()}] 👤 Processing user ID: ${userId}`);
       
-              const contact = await client.getContactById(userId).catch(err => {
+      // Check if bot is admin before attempting to kick
+      let botIsAdmin = false;
+      try {
+        const botContact = await client.getContactById(client.info.wid._serialized);
+        const botJid = jidKey(botContact);
+        
+        botIsAdmin = chat.participants.some(p => {
+          const pJid = getParticipantJid(p);
+          const isBot = pJid === botJid || pJid === client.info.wid._serialized;
+          if (isBot) {
+            return p.isAdmin;
+          }
+          return false;
+        });
+        
+        // Fallback: try to get invite code (only works if bot is admin)
+        if (!botIsAdmin) {
+          try {
+            await chat.getInviteCode();
+            botIsAdmin = true;
+          } catch (inviteError) {
+            botIsAdmin = false;
+          }
+        }
+      } catch (e) {
+        console.error(`[${getTimestamp()}] ❌ Error checking bot admin status: ${e.message}`);
+      }
+      
+      if (!botIsAdmin) {
+        console.warn(`[${getTimestamp()}] ⚠️ Bot may not be admin in group ${chat.name}, but attempting kick anyway`);
+        // Don't return - continue with kick attempt
+      }
+      
+      const contact = await client.getContactById(userId).catch(err => {
           console.error(`[${getTimestamp()}] ❌ Failed to get contact for ${userId}: ${err.message}`);
           return null;
         });
@@ -101,7 +124,6 @@ async function processUserMessages(userId, chatId) {
         // Blacklist user
       if (!(await isBlacklisted(userId))) {
         await addToBlacklist(userId);
-        console.log(`[${getTimestamp()}] ✅ User ${userId} added to blacklist`);
       }
       
       // Also blacklist group codes from invite links
@@ -116,7 +138,6 @@ async function processUserMessages(userId, chatId) {
         const groupLid = `${code}@lid`;
         if (!(await isBlacklisted(groupLid))) {
           await addToBlacklist(groupLid);
-          console.log(`[${getTimestamp()}] ✅ Group LID ${groupLid} added to blacklist`);
         }
       }
       
@@ -146,7 +167,6 @@ async function processUserMessages(userId, chatId) {
       
       // Set cooldown AFTER successfully taking action
       userActionCooldown.set(userId, Date.now());
-      console.log(`[${getTimestamp()}] ⏰ Cooldown set for ${userId} for ${COOLDOWN_DURATION/1000} seconds`);
     }
     
   } catch (error) {
@@ -180,7 +200,6 @@ function queueMessage(userId, chatId, message, hasInvite = false) {
     timestamp: Date.now()
   });
   
-  console.log(`[${getTimestamp()}] 📝 Queued message from ${userId}, queue size: ${messageQueue.get(userId).length}`);
   
   // Clear any existing timeout for this user
   if (userProcessTimeouts.has(userId)) {
@@ -189,10 +208,8 @@ function queueMessage(userId, chatId, message, hasInvite = false) {
   
   // Set new timeout - longer delay for rapid messages to batch them better
   const timeoutDelay = hasInvite ? 300 : 1000;
-  console.log(`[${getTimestamp()}] ⏰ Setting timeout for ${userId} in ${timeoutDelay}ms`);
   
   const timeoutId = setTimeout(() => {
-    console.log(`[${getTimestamp()}] ⏰ Timeout fired for ${userId} - processing queue now`);
     userProcessTimeouts.delete(userId);
     processUserMessages(userId, chatId);
   }, timeoutDelay); // Faster for invite links, slower for regular messages
@@ -223,9 +240,12 @@ async function loadCommands() {
       const cmd = doc.data().cmd.trim().toLowerCase();
       cachedCommands[cmd] = doc.data();
     });
-    console.log(`[${getTimestamp()}] 📥 Commands loaded:`, Object.keys(cachedCommands));
+    console.log(`[${getTimestamp()}] ✅ Loaded ${Object.keys(cachedCommands).length} commands from Firebase`);
   } catch (e) {
-    console.error(`[${getTimestamp()}] ❌ failed to load commands:`, e);
+    console.warn(`[${getTimestamp()}] ⚠️ Firebase not available - using local mode only`);
+    console.warn(`[${getTimestamp()}] ℹ️ Bot will still monitor invite links without database features`);
+    // Initialize with empty commands for local operation
+    cachedCommands = {};
   }
 }
 // ───────────────────────────────────────────────────────
@@ -272,14 +292,10 @@ const client = new Client({
 
 /* ───────────── ONE-TIME LOGIN HELPERS ───────────── */
 client.on('qr', qr => {
-  console.log(`[${getTimestamp()}] [DEBUG] QR code received, generating…`);
   qrcode.generate(qr, { small: true });
-  console.log(`[${getTimestamp()}] 📱  Scan the QR code above to log in.`);
 });
 
-client.on('authenticated', () => console.log(`[${getTimestamp()}] ✅  Authenticated!`));
 client.on('ready', async () => {
-  console.log(`[${getTimestamp()}] ✅  Bot is ready and logged in!`);
   console.log(`
    ██████╗░░█████╗░███╗░░░███╗░█████╗░██╗░░░██╗██╗░░░░░███████╗
   ██╔════╝░██╔══██╗████╗░████║██╔══██╗██║░░░██║██║░░░░░██╔════╝
@@ -293,11 +309,7 @@ client.on('ready', async () => {
     await loadCommands();
     
    mutedUsers = await loadMutedUsers();
-   console.log(`[${getTimestamp()}] ✅ Mute list loaded`);
 
-   console.log(`[${getTimestamp()}] Version 1.4.3 - TARGETED DEBUG for 972555030746: Enhanced auto-kick debugging for specific blacklisted user`);
-   console.log(`[${getTimestamp()}] ✅  Bot is ready, commands cache populated!`);
-   console.log(`[${getTimestamp()}] Version 1.5.0 - COMPREHENSIVE SWEEP SYSTEM: No matter how long it takes blacklist enforcement with multiple detection methods`);
 });
 client.on('auth_failure', e => console.error(`[${getTimestamp()}] ❌  AUTH FAILED`, e));
 
@@ -336,6 +348,8 @@ function getParticipantJid(participant) {
 
 // Robust kick function to prevent "expected at least 1 children" errors
 async function robustKickUser(chat, userId, reason = '') {
+  console.log(`[${getTimestamp()}] 🎯 Attempting to kick user ${userId} - Reason: ${reason}`);
+  
   try {
     // Validate user ID format
     if (!userId || userId.length < 10 || !userId.includes('@')) {
@@ -343,29 +357,113 @@ async function robustKickUser(chat, userId, reason = '') {
       return false;
     }
     
-    // Check if user is still in group
-    const userInGroup = chat.participants.some(p => {
-      const pJid = getParticipantJid(p);
-      return pJid === userId;
-    });
+    // Try to find the user in participants with different ID formats
+    let targetParticipant = null;
+    let actualUserId = userId;
     
-    if (!userInGroup) {
-      console.log(`[${getTimestamp()}] ℹ️ User ${userId} not in group - already removed`);
-      return true; // Consider successful since user is not in group
+    // Extract phone number from userId
+    const phoneMatch = userId.match(/(\d+)@/);
+    const phoneNumber = phoneMatch ? phoneMatch[1] : null;
+    
+    console.log(`[${getTimestamp()}] 🔍 Looking for user in participants (phone: ${phoneNumber})...`);
+    
+    // Check all participants for a match
+    for (const p of chat.participants) {
+      const pJid = getParticipantJid(p);
+      
+      // Direct match
+      if (pJid === userId) {
+        targetParticipant = p;
+        actualUserId = pJid;
+        console.log(`[${getTimestamp()}] ✅ Found exact match: ${pJid}`);
+        break;
+      }
+      
+      // Phone number match (handles LID vs regular JID)
+      if (phoneNumber && pJid.includes(phoneNumber)) {
+        targetParticipant = p;
+        actualUserId = pJid;
+        console.log(`[${getTimestamp()}] ✅ Found phone match: ${pJid}`);
+        break;
+      }
     }
     
-    console.log(`[${getTimestamp()}] 🎯 Attempting to kick ${userId}${reason ? ` (${reason})` : ''}`);
-    await chat.removeParticipants([userId]);
-    console.log(`[${getTimestamp()}] ✅ Successfully kicked user: ${userId}`);
-    return true;
+    if (!targetParticipant) {
+      console.log(`[${getTimestamp()}] ❌ User not found in group participants`);
+      console.log(`[${getTimestamp()}] 📋 Available participants:`);
+      chat.participants.forEach(p => {
+        const pJid = getParticipantJid(p);
+        console.log(`    - ${pJid} (admin: ${p.isAdmin})`);
+      });
+      return false;
+    }
+    
+    console.log(`[${getTimestamp()}] 🔄 User found in group, attempting removeParticipants with ID: ${actualUserId}`);
+    
+    // Try different methods to kick the user
+    try {
+      // Method 1: Standard removeParticipants with array
+      await chat.removeParticipants([actualUserId]);
+      console.log(`[${getTimestamp()}] ✅ Successfully kicked user ${actualUserId} (Method 1)`);
+      return true;
+    } catch (err1) {
+      console.log(`[${getTimestamp()}] ⚠️ Method 1 failed: ${err1.message}`);
+      
+      // Method 2: Try with just the user ID string (not in array)
+      try {
+        await chat.removeParticipants(actualUserId);
+        console.log(`[${getTimestamp()}] ✅ Successfully kicked user ${actualUserId} (Method 2)`);
+        return true;
+      } catch (err2) {
+        console.log(`[${getTimestamp()}] ⚠️ Method 2 failed: ${err2.message}`);
+        
+        // Method 3: Try using the participant object directly
+        if (targetParticipant) {
+          try {
+            await chat.removeParticipants([targetParticipant.id._serialized]);
+            console.log(`[${getTimestamp()}] ✅ Successfully kicked user ${actualUserId} (Method 3)`);
+            return true;
+          } catch (err3) {
+            console.log(`[${getTimestamp()}] ⚠️ Method 3 failed: ${err3.message}`);
+          }
+        }
+        
+        // Method 4: Try refreshing participants and using different formats
+        try {
+          console.log(`[${getTimestamp()}] 🔄 Method 4: Refreshing and trying alternative formats...`);
+          // Refresh the chat to get latest participants
+          const freshChat = await client.getChatById(chat.id._serialized);
+          
+          // Try to find user again in fresh participant list
+          const freshParticipant = freshChat.participants.find(p => {
+            const pJid = getParticipantJid(p);
+            return pJid === actualUserId || (phoneNumber && pJid.includes(phoneNumber));
+          });
+          
+          if (freshParticipant) {
+            // Try with fresh participant data
+            await freshChat.removeParticipants([freshParticipant.id._serialized]);
+            console.log(`[${getTimestamp()}] ✅ Successfully kicked user ${actualUserId} (Method 4)`);
+            return true;
+          }
+        } catch (err4) {
+          console.log(`[${getTimestamp()}] ⚠️ Method 4 failed: ${err4.message}`);
+        }
+        
+        throw err1; // Throw original error
+      }
+    }
     
   } catch (err) {
     console.error(`[${getTimestamp()}] ❌ Failed to kick user ${userId}: ${err.message}`);
     
+    // Log the full error for debugging
+    console.error(`[${getTimestamp()}] 📋 Full error details:`, err);
+    
     // If "expected at least 1 children" error, try refreshing and retry
     if (err.message.includes('expected at least 1 children')) {
+      console.log(`[${getTimestamp()}] 🔄 Refreshing chat data and retrying...`);
       try {
-        console.log(`[${getTimestamp()}] 🔄 Refreshing group data and retrying kick...`);
         await chat.fetchMessages();
         await new Promise(resolve => setTimeout(resolve, 1000));
         
@@ -376,17 +474,23 @@ async function robustKickUser(chat, userId, reason = '') {
         });
         
         if (stillExists) {
+          console.log(`[${getTimestamp()}] 🔄 User still exists after refresh, retrying kick...`);
           await chat.removeParticipants([userId]);
-          console.log(`[${getTimestamp()}] ✅ Kicked user after refresh: ${userId}`);
+          console.log(`[${getTimestamp()}] ✅ Successfully kicked user ${userId} on retry`);
           return true;
         } else {
-          console.log(`[${getTimestamp()}] ℹ️ User ${userId} already removed after refresh`);
+          console.log(`[${getTimestamp()}] ✅ User ${userId} no longer in group after refresh`);
           return true;
         }
       } catch (retryErr) {
         console.error(`[${getTimestamp()}] ❌ Retry kick also failed: ${retryErr.message}`);
         return false;
       }
+    }
+    
+    // If it's a permission error, log it specifically
+    if (err.message.includes('not authorized') || err.message.includes('admin')) {
+      console.error(`[${getTimestamp()}] ❌ Permission denied - bot may not have admin privileges`);
     }
     
     return false;
@@ -419,13 +523,6 @@ function getMessageAuthor(msg) {
 
 /* ───────────── UNIFIED message_create HANDLER ───────────── */
 
-function cleanPhoneNumber(phone) {
-  // Remove any Unicode invisible characters (LRM, RLM, etc.)
-  const normalized = phone.replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '');
-  // Remove plus, spaces, dashes, and any other formatting characters
-  return normalized.replace(/[+\s-]/g, '');
-}
-
 client.on('message_create', async msg => {
   // strip bidi chars & normalise
   const cleaned  = msg.body.replace(/\u200e/g, '').trim();
@@ -437,7 +534,6 @@ client.on('message_create', async msg => {
 
     if (cmd === '#mute' && !msg.hasQuotedMsg) {
     // Check if the message is from an admin
-    console.log(`[${getTimestamp()}] 🔊 Mute command received`);
     const chat = await msg.getChat();
     const sender = await msg.getContact();
 
@@ -470,13 +566,11 @@ client.on('message_create', async msg => {
 
       await chat.setMessagesAdminsOnly(true);
 
-      console.log(`[${getTimestamp()}] ✅ Group muted for ${arg} minutes by ${sender.pushname}`);
 
       // Set a timeout to unmute after the specified duration
       setTimeout(async () => {
         await chat.setMessagesAdminsOnly(false);
         //await chat.sendMessage('🔊 Group has been unmuted.');
-        console.log(`[${getTimestamp()}] ✅ Group unmuted automatically after timeout.`);
       }, parseInt(arg, 10) * 60000); // Convert minutes to milliseconds
     } catch (err) {
       await msg.reply('❌ Failed to mute the group.');
@@ -550,40 +644,33 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
           const botContact = await client.getContactById(client.info.wid._serialized);
           const botJid = jidKey(botContact);
           
-          console.log(`[${getTimestamp()}] 🤖 Bot JID for mute: ${botJid}`);
           
           // Check if bot is admin in this chat
           botIsAdmin = chat.participants.some(p => {
             const pJid = getParticipantJid(p);
             const isBot = pJid === botJid || pJid === client.info.wid._serialized;
             if (isBot) {
-              console.log(`[${getTimestamp()}] 🤖 Found bot in participants for mute: ${pJid}, isAdmin: ${p.isAdmin}`);
               return p.isAdmin;
             }
             return false;
           });
           
-          console.log(`[${getTimestamp()}] 🔍 Bot admin status for mute: ${botIsAdmin}`);
         } catch (e) {
           console.error(`[${getTimestamp()}] ❌ Error checking bot admin status for mute: ${e.message}`);
           // Fallback: try to get invite code (only works if bot is admin)
           try {
             await chat.getInviteCode();
             botIsAdmin = true;
-            console.log(`[${getTimestamp()}] ✅ Bot is admin for mute (confirmed via invite code test)`);
           } catch (inviteError) {
-            console.log(`[${getTimestamp()}] ❌ Bot cannot get invite code for mute - likely not admin`);
             botIsAdmin = false;
           }
         }
         
         if (!botIsAdmin) {
-          console.log(`[${getTimestamp()}] ⚠️ Bot is not admin - cannot mute users`);
           await msg.reply('⚠️ The bot must be an admin to mute users.');
           return;
         }
         
-        console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with mute`);
 
         // Calculate mute expiration time
         const muteUntil = Date.now() + muteDurationMs;
@@ -602,7 +689,6 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
           console.error('⚠️ Failed to send mute confirmation:', e.message);
         }
 
-        console.log(`✅ User @${target.split('@')[0]} muted for ${arg}`);
 
         const parts = arg.split(' ');
         let durationText;
@@ -634,7 +720,6 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
       
 
         await client.sendMessage(target, warningMessage);
-        console.log(`📩 Private mute warning sent to ${target} for ${durationText}`);
 
               // ─── schedule auto-unmute ────────────
               setTimeout(async () => {
@@ -646,7 +731,6 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
                     await removeMutedUser(target);
             
                     // Log unmute action
-                    console.log(`✅ User @${target.split('@')[0]} automatically unmuted after timeout.`);
             
                     // Send a message to the user informing that the restriction has been lifted
                     const unmuteMessage = [
@@ -666,7 +750,6 @@ if (msg.hasQuotedMsg && cmd === '#mute') {
             
                     // Send the unmute message to the user
                     await client.sendMessage(target, unmuteMessage);
-                    console.log(`📩 Unmute notification sent to @${target.split('@')[0]}`);
                 } catch (err) {
                     console.error(`❌ Failed to send unmute message: ${err.message}`);
                 }
@@ -711,40 +794,33 @@ if (cmd === '#botkick') {
         const botContact = await client.getContactById(client.info.wid._serialized);
         const botJid = jidKey(botContact);
         
-        console.log(`[${getTimestamp()}] 🤖 Bot JID for botkick: ${botJid}`);
         
         // Check if bot is admin in this chat
         botIsAdmin = chat.participants.some(p => {
           const pJid = getParticipantJid(p);
           const isBot = pJid === botJid || pJid === client.info.wid._serialized;
           if (isBot) {
-            console.log(`[${getTimestamp()}] 🤖 Found bot in participants for botkick: ${pJid}, isAdmin: ${p.isAdmin}`);
             return p.isAdmin;
           }
           return false;
         });
         
-        console.log(`[${getTimestamp()}] 🔍 Bot admin status for botkick: ${botIsAdmin}`);
       } catch (e) {
         console.error(`[${getTimestamp()}] ❌ Error checking bot admin status for botkick: ${e.message}`);
         // Fallback: try to get invite code (only works if bot is admin)
         try {
           await chat.getInviteCode();
           botIsAdmin = true;
-          console.log(`[${getTimestamp()}] ✅ Bot is admin for botkick (confirmed via invite code test)`);
         } catch (inviteError) {
-          console.log(`[${getTimestamp()}] ❌ Bot cannot get invite code for botkick - likely not admin`);
           botIsAdmin = false;
         }
       }
 
       if (!botIsAdmin) {
-          console.log(`[${getTimestamp()}] ⚠️ Bot is not admin - cannot kick users via botkick`);
           await msg.reply('⚠️ The bot must be an admin to kick users.');
           return;
       }
       
-      console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with botkick`);
 
       let kickedUsers = [];
       for (const participant of chat.participants) {
@@ -758,7 +834,6 @@ if (cmd === '#botkick') {
 
         // don't kick other admins
         if (participant.isAdmin) {
-          console.log(`[${getTimestamp()}] ⚠️ Cannot kick admin user: ${userLabel}`);
           await client.sendMessage(
             `${ALERT_PHONE}@c.us`,
             `⚠️ Cannot kick blacklisted user ${userLabel}: user is an admin.`
@@ -781,7 +856,6 @@ if (cmd === '#botkick') {
           ].join('\n');
           await client.sendMessage(participantJid, kickMessage);
 
-          console.log(`[${getTimestamp()}] ✅ Kicked blacklisted user: ${userLabel}`);
         } else {
           console.error(`[${getTimestamp()}] ❌ Failed to kick ${userLabel}: robust kick failed`);
           await client.sendMessage(
@@ -880,24 +954,23 @@ if (cleaned === '#help') {
       '16. *#warn* - Send a warning to a user (reply to their message, admin only)',
       '17. *#clear* - Delete last 10 messages from a user (reply to their message)',
       '18. *#cleartest* - Test bot\'s message deletion capabilities (admin only)',
-      '19. *#cleardebug* - Debug message author detection (reply to message)',
       '',
       '*👑 Super Admin Commands:*',
-      '20. *#promote* - Promote a user to admin (reply to their message, super admin only)',
-      '21. *#demote* - Demote an admin to regular user (reply to their message, super admin only)',
+      '19. *#promote* - Promote a user to admin (reply to their message, super admin only)',
+      '20. *#demote* - Demote an admin to regular user (reply to their message, super admin only)',
       '',
       '*📢 Communication Commands:*',
-      '22. *#announce [message]* - Send an announcement to all group members (admin only)',
-      '23. *#pin [days]* - Pin a message (reply to message, default 7 days, admin only)',
-      '24. *#translate* - Translate a message to Hebrew (reply to message or provide text)',
+      '21. *#announce [message]* - Send an announcement to all group members (admin only)',
+      '22. *#pin [days]* - Pin a message (reply to message, default 7 days, admin only)',
+      '23. *#translate* - Translate a message to Hebrew (reply to message or provide text)',
       '',
       '*📊 Information Commands:*',
-      '25. *#stats* - Show group statistics (member count, admin count, etc.)',
-      '26. *#commands* - Display all loaded custom commands from Firestore',
-      '27. *#help* - Show this help message',
+      '24. *#stats* - Show group statistics (member count, admin count, etc.)',
+      '25. *#commands* - Display all loaded custom commands from Firestore',
+      '26. *#help* - Show this help message',
       '',
       '*🔄 Recovery Commands:*',
-      '28. *#unb [number]* - Unban a previously banned number\n    (e.g., #unb 972555123456), must be as a reply to a bot message',
+      '27. *#unb [number]* - Unban a previously banned number\n    (e.g., #unb 972555123456), must be as a reply to a bot message',
       '',
       '💡 *Note:* Use these commands responsibly to ensure group safety and proper user behavior.',
       '⚠️ *WhatsApp URLs:* When someone posts a WhatsApp group link, they are automatically kicked and blacklisted.',
@@ -1083,7 +1156,6 @@ if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
               `👤 ID: ${targetJidBL}`,
               '🚫 Status: Added to blacklist'
             ].join('\n'));
-            console.log(`✅ Manually blacklisted: ${targetJidBL}`);
           } else {
             await msg.reply([
               'ℹ️ Blacklist Info',
@@ -1113,25 +1185,21 @@ if (msg.from === `${ALERT_PHONE}@c.us` && cleaned === '#status') {
             if (await removeFromBlacklist(providedJid)) {
               removedCount++;
               removedFormats.push(providedJid);
-              console.log(`✅ Manually unblacklisted: ${providedJid}`);
             }
             
             // If user provided legacy format, also search for related LID entries
             if (providedJid.includes('@c.us')) {
               const phoneNumber = providedJid.split('@')[0];
-              console.log(`[${getTimestamp()}] 🔍 Searching for LID entries related to ${phoneNumber}`);
               
               // Get all blacklisted entries and look for potential matches
               const blacklistedNumbers = await listBlacklist();
               
               // For now, let user manually specify both if needed
               // This is safer than guessing which LID belongs to which legacy number
-              console.log(`[${getTimestamp()}] ℹ️ If user has LID format too, they need to unblacklist it separately`);
             }
             
             // If user provided LID format, also try exact legacy format if they specify it
             if (providedJid.includes('@lid')) {
-              console.log(`[${getTimestamp()}] ℹ️ LID format provided. Legacy format (if exists) needs separate unblacklist.`);
             }
 
             if (removedCount > 0) {
@@ -1229,14 +1297,12 @@ if (msg.fromMe && cmd === '#kick' && msg.hasQuotedMsg) {
   // 1) Determine the target JID with LID support
   const target = getMessageAuthor(quoted);
   if (!target) {
-    console.log(`[${getTimestamp()}] ❌ Could not determine target user for kick`);
     return;
   }
 
   // 2) Delete the quoted message first
   try { 
     await quoted.delete(true); 
-    console.log(`[${getTimestamp()}] 🗑️ Deleted quoted message`);
   } catch (e) { 
     console.error(`[${getTimestamp()}] ❌ Failed to delete quoted message: ${e.message}`);
   }
@@ -1244,7 +1310,6 @@ if (msg.fromMe && cmd === '#kick' && msg.hasQuotedMsg) {
   // 3) Delete the #kick command message itself
   try {
     await msg.delete(true);
-    console.log(`[${getTimestamp()}] 🗑️ Deleted #kick command message`);
   } catch (e) {
     console.error(`[${getTimestamp()}] ❌ Failed to delete command message: ${e.message}`);
   }
@@ -1313,45 +1378,37 @@ if (msg.hasQuotedMsg && cmd === '#ban') {
           const botContact = await client.getContactById(client.info.wid._serialized);
           const botJid = jidKey(botContact);
           
-          console.log(`[${getTimestamp()}] 🤖 Bot JID for ban: ${botJid}`);
           
           // Check if bot is admin in this chat
           botIsAdmin = chat.participants.some(p => {
             const pJid = getParticipantJid(p);
             const isBot = pJid === botJid || pJid === client.info.wid._serialized;
             if (isBot) {
-              console.log(`[${getTimestamp()}] 🤖 Found bot in participants for ban: ${pJid}, isAdmin: ${p.isAdmin}`);
               return p.isAdmin;
             }
             return false;
           });
           
-          console.log(`[${getTimestamp()}] 🔍 Bot admin status for ban: ${botIsAdmin}`);
         } catch (e) {
           console.error(`[${getTimestamp()}] ❌ Error checking bot admin status for ban: ${e.message}`);
           // Fallback: try to get invite code (only works if bot is admin)
           try {
             await chat.getInviteCode();
             botIsAdmin = true;
-            console.log(`[${getTimestamp()}] ✅ Bot is admin for ban (confirmed via invite code test)`);
           } catch (inviteError) {
-            console.log(`[${getTimestamp()}] ❌ Bot cannot get invite code for ban - likely not admin`);
             botIsAdmin = false;
           }
         }
         
         if (!botIsAdmin) {
-          console.log(`[${getTimestamp()}] ⚠️ Bot is not admin - cannot ban users`);
           await msg.reply('⚠️ The bot must be an admin to ban users.');
           return;
         }
         
-        console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with ban`);
         
         // 1) Delete the quoted message
         try {
             await quotedMsg.delete(true);
-            console.log(`[${getTimestamp()}] 🗑️ Deleted quoted message for ban`);
         } catch (e) {
             console.error(`[${getTimestamp()}] ❌ Failed to delete message: ${e.message}`);
         }
@@ -1360,13 +1417,11 @@ if (msg.hasQuotedMsg && cmd === '#ban') {
         const targetJid = jidKey(target);
         if (!(await isBlacklisted(targetJid))) {
             await addToBlacklist(targetJid);
-            console.log(`[${getTimestamp()}] ✅ User ${targetJid} added to blacklist`);
         }
         
         // 3) Kick the user using robust method
         const kickSuccess = await robustKickUser(chat, target, 'ban command');
         if (kickSuccess) {
-            console.log(`[${getTimestamp()}] ✅ Banned and kicked user: ${target}`);
         } else {
             console.error(`[${getTimestamp()}] ❌ Failed to kick user during ban: ${target}`);
         }
@@ -1406,7 +1461,6 @@ if (msg.hasQuotedMsg && cmd === '#ban') {
             // Ignore
         }
         
-        console.log(`[${getTimestamp()}] ✅ Ban completed for ${target}`);
     } catch (err) {
         console.error('❌ Ban error:', err.message);
         await msg.reply('❌ Failed to ban user.');
@@ -1459,7 +1513,6 @@ if (cmd === '#translate') {
       } else {
           await msg.reply(`🌍 הטקסט כבר בעברית:\n${translatedText}`);
       }
-      console.log(`[${getTimestamp()}] ✅ Translated from ${detectedLang}: ${translatedText}`);
   } catch (err) {
       console.error('❌ Translation failed:', err.message);
       await msg.reply('🚫 Translation error: Unable to process the message.');
@@ -1509,7 +1562,6 @@ if (msg.hasQuotedMsg && cmd === '#warn') {
         
         await client.sendMessage(target, warningMessage);
         await msg.reply(`⚠️ Warning sent to @${target.split('@')[0]}`);
-        console.log(`[${getTimestamp()}] ⚠️ Warning sent to ${target}`);
     } catch (err) {
         console.error('❌ Warning error:', err.message);
         await msg.reply('❌ Failed to send warning.');
@@ -1596,7 +1648,6 @@ if (msg.hasQuotedMsg && cmd === '#clear') {
         return;
     }
     
-    console.log(`[${getTimestamp()}] #clear target: ${target}`);
     
     try {
         // Fetch more messages for better results
@@ -1608,7 +1659,6 @@ if (msg.hasQuotedMsg && cmd === '#clear') {
             return author === target && m.id.id !== msg.id.id;
         });
         
-        console.log(`[${getTimestamp()}] Found ${targetMessages.length} messages from target user`);
         
         // Sort by timestamp (newest first) and take last 10
         const messagesToDelete = targetMessages
@@ -1627,7 +1677,6 @@ if (msg.hasQuotedMsg && cmd === '#clear') {
                 try {
                     await message.delete(true);
                     deletedCount++;
-                    console.log(`[${getTimestamp()}] ✅ Deleted message ${i + 1}/${messagesToDelete.length}`);
                 } catch (e) {
                     console.error(`[${getTimestamp()}] ❌ Failed to delete message: ${e.message}`);
                 }
@@ -1654,7 +1703,6 @@ if (msg.hasQuotedMsg && cmd === '#clear') {
             // Ignore
         }
         
-        console.log(`[${getTimestamp()}] Clear completed: ${deletedCount}/${messagesToDelete.length} messages deleted`);
         
         // Send summary to admin
         if (deletedCount > 0) {
@@ -1697,7 +1745,6 @@ if (msg.hasQuotedMsg && cmd === '#promote') {
         
         await chat.promoteParticipants([target]);
         await msg.reply(`✅ @${target.split('@')[0]} has been promoted to admin.`);
-        console.log(`[${getTimestamp()}] 👑 Promoted ${target} to admin`);
     } catch (err) {
         console.error('❌ Promote error:', err.message);
         await msg.reply('❌ Failed to promote user.');
@@ -1732,7 +1779,6 @@ if (msg.hasQuotedMsg && cmd === '#demote') {
         
         await chat.demoteParticipants([target]);
         await msg.reply(`✅ @${target.split('@')[0]} has been demoted from admin.`);
-        console.log(`[${getTimestamp()}] 👤 Demoted ${target} from admin`);
     } catch (err) {
         console.error('❌ Demote error:', err.message);
         await msg.reply('❌ Failed to demote user.');
@@ -1776,7 +1822,6 @@ if (cmd === '#announce') {
         ].join('\n');
         
         await chat.sendMessage(announcement, { mentions: [sender] });
-        console.log(`[${getTimestamp()}] 📢 Announcement sent by ${sender.pushname}`);
     } catch (err) {
         console.error('❌ Announce error:', err.message);
         await msg.reply('❌ Failed to send announcement.');
@@ -1785,79 +1830,6 @@ if (cmd === '#announce') {
 }
 
 // ─────── #pin – Pin message (admin only) ───────
-// ─────── #cleardebug – Debug message authors ───────
-if (msg.hasQuotedMsg && cmd === '#cleardebug') {
-    try {
-        const chat = await msg.getChat();
-        const quotedMsg = await msg.getQuotedMessage();
-        
-        // Get target from quoted message
-        const target = getMessageAuthor(quotedMsg);
-        const targetJid = jidKey(target);
-        
-        console.log(`[${getTimestamp()}] === CLEAR DEBUG ===`);
-        console.log(`[${getTimestamp()}] Quoted message author: ${target}`);
-        console.log(`[${getTimestamp()}] Normalized target JID: ${targetJid}`);
-        
-        // Fetch recent messages
-        const messages = await chat.fetchMessages({ limit: 20 });
-        
-        let debugInfo = '🔍 *Clear Debug Info*\n\n';
-        debugInfo += `Target: ${target}\n`;
-        debugInfo += `Normalized: ${targetJid}\n\n`;
-        
-        let matchCount = 0;
-        const matchedMessages = [];
-        
-        // First pass: count all matches
-        for (let i = 0; i < messages.length; i++) {
-            const message = messages[i];
-            const author = getMessageAuthor(message);
-            const authorJid = jidKey(author);
-            const isMatch = authorJid === targetJid;
-            
-            if (isMatch) {
-                matchCount++;
-                matchedMessages.push({ index: i + 1, message, author, authorJid });
-            }
-        }
-        
-        debugInfo += `*Total Matches: ${matchCount}*\n\n`;
-        
-        // Show matched messages
-        if (matchedMessages.length > 0) {
-            debugInfo += '*Matched Messages:*\n';
-            matchedMessages.slice(0, 10).forEach((match, idx) => {
-                debugInfo += `${idx + 1}. Message #${match.index}\n`;
-                debugInfo += `   Author: ${match.author}\n`;
-                debugInfo += `   Body: ${match.message.body?.substring(0, 30) || '[media]'}...\n\n`;
-            });
-            if (matchedMessages.length > 10) {
-                debugInfo += `... and ${matchedMessages.length - 10} more\n\n`;
-            }
-        }
-        
-        debugInfo += '*First 10 Messages (for reference):*\n';
-        for (let i = 0; i < Math.min(10, messages.length); i++) {
-            const message = messages[i];
-            const author = getMessageAuthor(message);
-            const authorJid = jidKey(author);
-            const isMatch = authorJid === targetJid;
-            
-            debugInfo += `${i + 1}. Author: ${author}\n`;
-            debugInfo += `   Match: ${isMatch ? '✅' : '❌'}\n`;
-            debugInfo += `   Body: ${message.body?.substring(0, 20) || '[media]'}...\n\n`;
-        }
-        
-        await msg.reply(debugInfo);
-        console.log(`[${getTimestamp()}] Debug info sent`);
-        
-    } catch (err) {
-        console.error('❌ Clear debug error:', err.message);
-        await msg.reply('❌ Failed to debug clear command.');
-    }
-    return;
-}
 
 
 // ─────── #cleartest – Test message deletion capabilities ───────
@@ -1986,7 +1958,6 @@ if (msg.hasQuotedMsg && cmd === '#pin') {
         
         await quotedMsg.pin(duration * 24 * 60 * 60); // Convert days to seconds
         await msg.reply(`📌 Message pinned for ${duration} days.`);
-        console.log(`[${getTimestamp()}] 📌 Message pinned for ${duration} days`);
     } catch (err) {
         console.error('❌ Pin error:', err.message);
         await msg.reply('❌ Failed to pin message.');
@@ -2004,7 +1975,6 @@ client.on('message', async msg => {
    // Ignore messages sent before the bot was started
    const messageTimestamp = msg.timestamp * 1000; // Convert from seconds to milliseconds
    if (messageTimestamp < startTime) {
-     console.log(`[${getTimestamp()}] ⏳ Ignored old message from ${msg.from}`);
      return;
    }
    // skip self-echo
@@ -2022,7 +1992,6 @@ client.on('message', async msg => {
 
     // 2) Just continue to delete messages - no kicking during mute period
     // Log the violation count for admin reference
-    console.log(`[${getTimestamp()}] 🗑️ Deleting message #${count} from muted user @${author.split('@')[0]}`);
 
     // 3) Shadow-delete the message
     try {
@@ -2047,14 +2016,19 @@ client.on('message', async msg => {
   
   // Debug logging
   if (body.toLowerCase().includes('whatsapp.com')) {
-    console.log(`[${getTimestamp()}] 🔍 Detected potential WhatsApp link in message from ${msg.from}`);
-    console.log(`[${getTimestamp()}] 📧 Message sender (contact): ${contactJid}`);
-    console.log(`[${getTimestamp()}] 👤 Message author (getMessageAuthor): ${author}`);
-    console.log(`[${getTimestamp()}] Message body: ${body}`);
-    console.log(`[${getTimestamp()}] Matches found: ${matches.length}`);
+    console.log(`[${getTimestamp()}] 🔍 WhatsApp link detected in message`);
+    console.log(`[${getTimestamp()}] 📋 Message details:`);
+    console.log(`   - Body: ${body.substring(0, 100)}...`);
+    console.log(`   - From: ${msg.from}`);
+    console.log(`   - Author: ${msg.author || 'N/A'}`);
+    console.log(`   - Contact JID: ${contactJid}`);
+    console.log(`   - Chat: ${chat.name}`);
   }
   
   if (!matches.length) return;
+  
+  console.log(`[${getTimestamp()}] 🚨 INVITE LINK DETECTED! ${matches.length} link(s) found`);
+  console.log(`[${getTimestamp()}] 🔗 Links: ${matches.join(', ')}`);
   
   // Extract group codes from URLs
   const groupCodes = [];
@@ -2071,12 +2045,11 @@ client.on('message', async msg => {
     return pJid === contactJid && p.isAdmin;
   });
   
-  console.log(`[${getTimestamp()}] 🔗 WhatsApp invite detected from ${contactJid}`);
-  console.log(`[${getTimestamp()}] Sender is admin: ${senderIsAdmin}`);
-  console.log(`[${getTimestamp()}] Sender is whitelisted: ${WHITELIST.has(contactJid)}`);
+  console.log(`[${getTimestamp()}] 👤 Sender is admin: ${senderIsAdmin}`);
+  console.log(`[${getTimestamp()}] 📋 Sender is whitelisted: ${WHITELIST.has(contactJid)}`);
   
   if (senderIsAdmin || WHITELIST.has(contactJid)) {
-    console.log(`[${getTimestamp()}] ℹ️ Skipping action - sender is admin or whitelisted`);
+    console.log(`[${getTimestamp()}] ✅ Sender is admin or whitelisted, ignoring invite link`);
     return;
   }
 
@@ -2087,46 +2060,86 @@ client.on('message', async msg => {
     const botContact = await client.getContactById(client.info.wid._serialized);
     const botJid = jidKey(botContact);
     
-    console.log(`[${getTimestamp()}] 🤖 Bot JID: ${botJid}`);
     
     // Check if bot is admin in this chat
     botIsAdmin = chat.participants.some(p => {
       const pJid = getParticipantJid(p);
       const isBot = pJid === botJid || pJid === client.info.wid._serialized;
       if (isBot) {
-        console.log(`[${getTimestamp()}] 🤖 Found bot in participants: ${pJid}, isAdmin: ${p.isAdmin}`);
         return p.isAdmin;
       }
       return false;
     });
     
-    console.log(`[${getTimestamp()}] 🔍 Bot admin status: ${botIsAdmin}`);
   } catch (e) {
     console.error(`[${getTimestamp()}] ❌ Error checking bot admin status: ${e.message}`);
     // Fallback: try to get invite code (only works if bot is admin)
     try {
       await chat.getInviteCode();
       botIsAdmin = true;
-      console.log(`[${getTimestamp()}] ✅ Bot is admin (confirmed via invite code test)`);
     } catch (inviteError) {
-      console.log(`[${getTimestamp()}] ❌ Bot cannot get invite code - likely not admin`);
       botIsAdmin = false;
     }
   }
   
+  // Log admin status but don't block the kick attempt
   if (!botIsAdmin) {
-    console.log(`[${getTimestamp()}] ⚠️ Bot is not admin - cannot take action on invite link`);
-    return;
+    console.warn(`[${getTimestamp()}] ⚠️ Bot may not be admin, but attempting to kick invite spammer anyway`);
   }
   
-  console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with invite link moderation`); 
 
   // Use the ACTUAL MESSAGE AUTHOR (LID format) for kick, contactJid for blacklist
   const kickTarget = author;  // This is the LID format that exists in group participants
   const blacklistTarget = contactJid;  // This is for blacklist (both formats should be blacklisted)
   
-  console.log(`[${getTimestamp()}] 🎯 Kick target (author): ${kickTarget}`);
-  console.log(`[${getTimestamp()}] 🎯 Blacklist target (contactJid): ${blacklistTarget}`);
+  // Log all available IDs for debugging
+  console.log(`[${getTimestamp()}] 🔍 Available IDs for kicking:`);
+  console.log(`   - author: ${author}`);
+  console.log(`   - msg.from: ${msg.from}`);
+  console.log(`   - contactJid: ${contactJid}`);
+  console.log(`   - contact.number: ${contact.number || 'N/A'}`);
+  
+  // Also try to find the user by their phone number in the participants list
+  // This handles the case where author is in LID format but participants use c.us format
+  let actualKickTarget = kickTarget;
+  
+  // First, try to find by exact match
+  let matchingParticipant = chat.participants.find(p => {
+    const pJid = getParticipantJid(p);
+    return pJid === kickTarget || pJid === contactJid || pJid === msg.from;
+  });
+  
+  // If no exact match and we have LID format, try phone number matching
+  if (!matchingParticipant && kickTarget && kickTarget.includes('@lid')) {
+    // Extract phone number from LID
+    const lidPhone = kickTarget.split('@')[0];
+    // Look for this phone in participants
+    matchingParticipant = chat.participants.find(p => {
+      const pJid = getParticipantJid(p);
+      return pJid.includes(lidPhone);
+    });
+  }
+  
+  // If still no match, try using contact.number
+  if (!matchingParticipant && contact.number) {
+    matchingParticipant = chat.participants.find(p => {
+      const pJid = getParticipantJid(p);
+      return pJid.includes(contact.number);
+    });
+  }
+  
+  if (matchingParticipant) {
+    actualKickTarget = getParticipantJid(matchingParticipant);
+    console.log(`[${getTimestamp()}] ✅ Found participant match: ${actualKickTarget}`);
+  } else {
+    console.log(`[${getTimestamp()}] ❌ No participant match found`);
+    // Try using msg.from as fallback
+    if (msg.from && msg.from.includes('@c.us')) {
+      actualKickTarget = msg.from;
+      console.log(`[${getTimestamp()}] 🔄 Using msg.from as fallback: ${actualKickTarget}`);
+    }
+  }
+  
   
   // Validate that we have a valid kick target before proceeding
   if (!kickTarget) {
@@ -2135,13 +2148,10 @@ client.on('message', async msg => {
   }
   
   // ============= IMMEDIATE KICK - NO QUEUE! =============
-  console.log(`[${getTimestamp()}] 🚨 IMMEDIATE PROCESSING - NO QUEUE!`);
   
   // 1) Delete invite message immediately
   try {
-    console.log(`[${getTimestamp()}] 🗑️ Deleting invite message...`);
     await msg.delete(true);
-    console.log(`[${getTimestamp()}] ✅ Invite message deleted`);
   } catch (e) {
     console.error(`[${getTimestamp()}] ❌ Failed to delete invite message: ${e.message}`);
   }
@@ -2151,13 +2161,11 @@ client.on('message', async msg => {
     // Blacklist the contact JID (legacy format)
     if (!(await isBlacklisted(blacklistTarget))) {
       await addToBlacklist(blacklistTarget);
-      console.log(`[${getTimestamp()}] ✅ User ${blacklistTarget} added to blacklist`);
     }
     
     // Also blacklist the LID format if different
     if (kickTarget !== blacklistTarget && !(await isBlacklisted(kickTarget))) {
       await addToBlacklist(kickTarget);
-      console.log(`[${getTimestamp()}] ✅ User ${kickTarget} added to blacklist`);
     }
     
     // Also blacklist group codes from invite links
@@ -2165,7 +2173,6 @@ client.on('message', async msg => {
       const groupLid = `${code}@lid`;
       if (!(await isBlacklisted(groupLid))) {
         await addToBlacklist(groupLid);
-        console.log(`[${getTimestamp()}] ✅ Group LID ${groupLid} added to blacklist`);
       }
     }
   } catch (e) {
@@ -2173,12 +2180,34 @@ client.on('message', async msg => {
   }
   
   // 3) KICK USER IMMEDIATELY - ROBUST METHOD
-  console.log(`[${getTimestamp()}] 🚨 KICKING USER IMMEDIATELY: ${kickTarget}`);
-  const kickSuccess = await robustKickUser(chat, kickTarget, 'invite link spam');
+  // Double-check bot admin status before kick
+  const botId = client.info.wid._serialized;
+  const botInGroup = chat.participants.find(p => {
+    const pJid = getParticipantJid(p);
+    return pJid === botId || pJid.includes(client.info.wid.user);
+  });
+  
+  if (botInGroup) {
+    console.log(`[${getTimestamp()}] 🤖 Bot status in group: ${botInGroup.isAdmin ? '✅ Admin' : '❌ Not Admin'}`);
+  } else {
+    console.log(`[${getTimestamp()}] ⚠️ Bot not found in participants list`);
+  }
+  
+  console.log(`[${getTimestamp()}] 🎯 Preparing to kick invite spammer: ${actualKickTarget} (original: ${kickTarget})`);
+  const kickSuccess = await robustKickUser(chat, actualKickTarget, 'invite link spam');
   if (kickSuccess) {
-    console.log(`[${getTimestamp()}] ✅ KICKED USER: ${kickTarget}`);
+    console.log(`[${getTimestamp()}] ✅ Successfully kicked invite spammer: ${kickTarget}`);
   } else {
     console.error(`[${getTimestamp()}] ❌ FAILED TO KICK USER: ${kickTarget}`);
+    // Send detailed alert about kick failure
+    await client.sendMessage(`${ALERT_PHONE}@c.us`, 
+      `⚠️ *Kick Failed - Manual Action Required*\n` +
+      `👤 User: ${describeContact(contact)}\n` +
+      `📍 Group: ${chat.name}\n` +
+      `🎯 Attempted to kick: ${kickTarget}\n` +
+      `🚫 Bot may need admin privileges\n` +
+      `📋 User was blacklisted but not removed`
+    ).catch(() => {});
   }
   
   // 4) Send alert to admin
@@ -2202,75 +2231,44 @@ client.on('message', async msg => {
     
     await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
     await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${blacklistTarget}`);
-    console.log(`[${getTimestamp()}] ✅ Alert sent to admin`);
   } catch (e) {
     console.error(`[${getTimestamp()}] ❌ Failed to send alert: ${e.message}`);
   }
   
-  console.log(`[${getTimestamp()}] 🎯 IMMEDIATE ACTION COMPLETED FOR: ${kickTarget}`);
 });
 
 /* ───────────── BLACKLISTED USER AUTO-KICK ON JOIN (Fixed for LID) ───────────── */
 client.on('group_join', async evt => {
   const pid = evt.id?.participant;
   if (!pid) {
-    console.log(`[${getTimestamp()}] ⚠️ No participant ID in group join event`);
     return;
   }
 
-  console.log(`[${getTimestamp()}] 👋 User joined group: ${pid}`);
-  console.log(`[${getTimestamp()}] 🏠 Group ID: ${evt.id.remote}`);
 
   const { isWhitelisted } = require('./services/whitelistService');
   const chat = await client.getChatById(evt.id.remote).catch(() => null);
   if (!chat?.isGroup) {
-    console.log(`[${getTimestamp()}] ⚠️ Could not get group chat for join event`);
     return;
   }
 
-  console.log(`[${getTimestamp()}] 📍 Group name: ${chat.name}`);
 
   const contact = await client.getContactById(pid).catch(() => null);
   if (!contact) {
-    console.log(`[${getTimestamp()}] ⚠️ Could not get contact for participant: ${pid}`);
     return;
   }
 
   // Get both formats for comprehensive blacklist check
-  const legacyJid = jidKey(contact);  // Legacy format (972555030746@c.us)
+  const legacyJid = jidKey(contact);  // Legacy format
   const lidJid = pid;                 // LID format (130468791996475@lid)
   
-  console.log(`[${getTimestamp()}] 🔍 AUTO-KICK CHECK - User joined:`);
-  console.log(`[${getTimestamp()}] 👤 Contact info: ${describeContact(contact)}`);
-  console.log(`[${getTimestamp()}] 📧 Legacy JID: ${legacyJid}`);
-  console.log(`[${getTimestamp()}] 🆔 LID JID: ${lidJid}`);
-  console.log(`[${getTimestamp()}] 🔍 Contact number: ${contact?.number || 'N/A'}`);
-  console.log(`[${getTimestamp()}] 🔍 Contact pushname: ${contact?.pushname || 'N/A'}`);
-  console.log(`[${getTimestamp()}] 🔍 Raw participant ID: ${pid}`);
-
-  // **SPECIAL DEBUG FOR 972555030746**
-  if (legacyJid.includes('972555030746') || lidJid.includes('972555030746') || contact?.number?.includes('972555030746')) {
-    console.log(`[${getTimestamp()}] 🚨 DETECTED 972555030746 USER JOINING!`);
-    console.log(`[${getTimestamp()}] 🔍 All contact properties:`, JSON.stringify(contact, null, 2));
-    console.log(`[${getTimestamp()}] 🔍 Trying different JID formats:`);
-    console.log(`[${getTimestamp()}] 🔍   - legacyJid: ${legacyJid}`);
-    console.log(`[${getTimestamp()}] 🔍   - lidJid: ${lidJid}`);
-    console.log(`[${getTimestamp()}] 🔍   - contact.id._serialized: ${contact?.id?._serialized}`);
-    console.log(`[${getTimestamp()}] 🔍   - contact._serialized: ${contact?._serialized}`);
-  }
 
   // Check if EITHER format is blacklisted
   const isLegacyBlacklisted = await isBlacklisted(legacyJid);
   const isLidBlacklisted = await isBlacklisted(lidJid);
   const isUserBlacklisted = isLegacyBlacklisted || isLidBlacklisted;
 
-  console.log(`[${getTimestamp()}] 🚫 Legacy format blacklisted: ${isLegacyBlacklisted}`);
-  console.log(`[${getTimestamp()}] 🚫 LID format blacklisted: ${isLidBlacklisted}`);
-  console.log(`[${getTimestamp()}] 🚫 USER IS BLACKLISTED: ${isUserBlacklisted}`);
 
   if (isUserBlacklisted) {
-    console.log(`[${getTimestamp()}] 🚨 BLACKLISTED USER JOINED - ATTEMPTING IMMEDIATE AUTO-KICK!`);
-    console.log(`[${getTimestamp()}] 🎯 Will attempt to kick: ${lidJid}`);
     
     try {
       // Check if bot is admin first - improved detection (same as invite link handler)
@@ -2279,8 +2277,6 @@ client.on('group_join', async evt => {
         const botContact = await client.getContactById(client.info.wid._serialized);
         const botJid = jidKey(botContact);
         
-        console.log(`[${getTimestamp()}] 🤖 Bot JID for auto-kick: ${botJid}`);
-        console.log(`[${getTimestamp()}] 👥 Group participants count: ${chat.participants.length}`);
         
         // Check each participant for bot
         let foundBot = false;
@@ -2288,46 +2284,36 @@ client.on('group_join', async evt => {
           const pJid = getParticipantJid(p);
           const isBot = pJid === botJid || pJid === client.info.wid._serialized;
           if (isBot) {
-            console.log(`[${getTimestamp()}] 🤖 Found bot in participants[${index}]: ${pJid}, isAdmin: ${p.isAdmin}`);
             botIsAdmin = p.isAdmin;
             foundBot = true;
           }
         });
         
         if (!foundBot) {
-          console.log(`[${getTimestamp()}] ❌ Bot not found in participants list!`);
         }
         
-        console.log(`[${getTimestamp()}] 🔍 Bot admin status for auto-kick: ${botIsAdmin}`);
       } catch (e) {
         console.error(`[${getTimestamp()}] ❌ Error checking bot admin status for auto-kick: ${e.message}`);
         // Fallback: try to get invite code (only works if bot is admin)
         try {
           await chat.getInviteCode();
           botIsAdmin = true;
-          console.log(`[${getTimestamp()}] ✅ Bot is admin for auto-kick (confirmed via invite code test)`);
         } catch (inviteError) {
-          console.log(`[${getTimestamp()}] ❌ Bot cannot get invite code for auto-kick - likely not admin`);
           botIsAdmin = false;
         }
       }
       
       if (!botIsAdmin) {
-        console.log(`[${getTimestamp()}] ⚠️ CANNOT AUTO-KICK - Bot is not admin in this group`);
         await client.sendMessage(`${ALERT_PHONE}@c.us`, 
           `⚠️ *Cannot Auto-Kick Blacklisted User*\n👤 User: ${describeContact(contact)}\n📍 Group: ${chat.name}\n🚫 Reason: Bot is not admin in this group`);
         return;
       }
 
-      console.log(`[${getTimestamp()}] ✅ Bot is admin - proceeding with auto-kick`);
       
       // Remove the blacklisted user using robust method
-      console.log(`[${getTimestamp()}] 🚨 EXECUTING AUTO-KICK: ${lidJid}`);
       const kickSuccess = await robustKickUser(chat, lidJid, 'auto-kick on join');
       if (kickSuccess) {
-        console.log(`[${getTimestamp()}] ✅ AUTO-KICK SUCCESSFUL for: ${lidJid}`);
       } else {
-        console.log(`[${getTimestamp()}] ❌ AUTO-KICK FAILED for: ${lidJid}`);
       }
       
       // Notify the kicked user
@@ -2368,7 +2354,6 @@ client.on('group_join', async evt => {
     }
     return;
   } else {
-    console.log(`[${getTimestamp()}] ✅ User is not blacklisted, allowing join: ${legacyJid}`);
   }
 });
 
@@ -2406,12 +2391,8 @@ client.on('disconnected', async reason => {
 });
 
 /* ───────────── DEBUG HOOKS ───────────── */
-client.on('loading_screen', pct => console.log(`🔄 Loading screen: ${pct}%`));
-client.on('change_state', st => console.log('🧭 State changed to:', st));
 
 /* ───────────── START BOT ───────────── */
-console.log(`[${getTimestamp()}] 🚀 Bot starting... initializing WhatsApp Web`);
-console.log(`[${getTimestamp()}] 📡 Calling client.initialize()…`);
 
 // Add startup timeout and retry logic
 const startBot = async () => {
@@ -2429,9 +2410,7 @@ const startBot = async () => {
     }
     
     // Wait and retry
-    console.log(`[${getTimestamp()}] 🔄 Retrying in 10 seconds...`);
     setTimeout(() => {
-      console.log(`[${getTimestamp()}] 🔄 Restarting bot...`);
       process.exit(1); // Let PM2 restart us
     }, 10000);
   }
@@ -2439,11 +2418,9 @@ const startBot = async () => {
 
 // Handle browser crashes during startup
 client.on('puppeteer_start', () => {
-  console.log(`[${getTimestamp()}] 🎭 Puppeteer browser starting...`);
 });
 
 client.on('browser_close', () => {
-  console.log(`[${getTimestamp()}] 🎭 Browser closed unexpectedly`);
 });
 
 startBot();
@@ -2454,7 +2431,6 @@ startBot();
 // Enhanced kick function with comprehensive checking (no time pressure)
 async function kickBlacklistedUser(chat, userId, source = 'unknown') {
   const startTime = Date.now();
-  console.log(`[${getTimestamp()}] 🎯 SWEEP: Starting comprehensive blacklist check for ${userId} (from: ${source})`);
   
   try {
     // Get user contact with retry logic
@@ -2463,17 +2439,14 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
       try {
         contact = await client.getContactById(userId);
         if (contact) {
-          console.log(`[${getTimestamp()}] ✅ SWEEP: Got contact on attempt ${attempt}`);
           break;
         }
       } catch (e) {
-        console.log(`[${getTimestamp()}] ⚠️ SWEEP: Contact fetch attempt ${attempt} failed: ${e.message}`);
         if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
 
     if (!contact) {
-      console.log(`[${getTimestamp()}] ❌ SWEEP: Could not get contact for ${userId} after 3 attempts`);
       return false;
     }
 
@@ -2481,9 +2454,6 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
     const legacyJid = jidKey(contact);
     const lidJid = userId;
     
-    console.log(`[${getTimestamp()}] 🔍 SWEEP: Checking all formats for ${describeContact(contact)}`);
-    console.log(`[${getTimestamp()}] 🔍 SWEEP: Legacy: ${legacyJid}`);
-    console.log(`[${getTimestamp()}] 🔍 SWEEP: LID: ${lidJid}`);
 
     // Comprehensive blacklist check (with retries if needed)
     let isLegacyBlacklisted = false;
@@ -2493,7 +2463,6 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
       isLegacyBlacklisted = await isBlacklisted(legacyJid);
       isLidBlacklisted = await isBlacklisted(lidJid);
     } catch (e) {
-      console.log(`[${getTimestamp()}] ⚠️ SWEEP: Blacklist check error, retrying... ${e.message}`);
       await new Promise(resolve => setTimeout(resolve, 1000));
       try {
         isLegacyBlacklisted = await isBlacklisted(legacyJid);
@@ -2506,17 +2475,12 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
 
     const isUserBlacklisted = isLegacyBlacklisted || isLidBlacklisted;
     
-    console.log(`[${getTimestamp()}] 🚫 SWEEP: Legacy blacklisted: ${isLegacyBlacklisted}`);
-    console.log(`[${getTimestamp()}] 🚫 SWEEP: LID blacklisted: ${isLidBlacklisted}`);
-    console.log(`[${getTimestamp()}] 🚫 SWEEP: USER IS BLACKLISTED: ${isUserBlacklisted}`);
 
     if (!isUserBlacklisted) {
-      console.log(`[${getTimestamp()}] ✅ SWEEP: User is clean, no action needed`);
       return false;
     }
 
     // User IS blacklisted - proceed with thorough kick process
-    console.log(`[${getTimestamp()}] 🚨 SWEEP: CONFIRMED BLACKLISTED USER - PROCEEDING WITH KICK`);
 
     // Check bot admin status thoroughly
     let botIsAdmin = false;
@@ -2529,7 +2493,6 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
         const pJid = getParticipantJid(p);
         const isBot = pJid === botJid || pJid === client.info.wid._serialized;
         if (isBot) {
-          console.log(`[${getTimestamp()}] 🤖 SWEEP: Found bot in participants: ${pJid}, isAdmin: ${p.isAdmin}`);
           return p.isAdmin;
         }
         return false;
@@ -2540,9 +2503,7 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
         try {
           await chat.getInviteCode();
           botIsAdmin = true;
-          console.log(`[${getTimestamp()}] 🤖 SWEEP: Bot admin confirmed via invite code test`);
         } catch (e) {
-          console.log(`[${getTimestamp()}] 🤖 SWEEP: Bot cannot get invite code - not admin`);
         }
       }
     } catch (e) {
@@ -2550,7 +2511,6 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
     }
 
     if (!botIsAdmin) {
-      console.log(`[${getTimestamp()}] ⚠️ SWEEP: Cannot kick - bot is not admin in ${chat.name}`);
       
       // Alert admin about the issue
       await client.sendMessage(`${ALERT_PHONE}@c.us`, 
@@ -2571,7 +2531,6 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
     });
     
     if (!userInGroup) {
-      console.log(`[${getTimestamp()}] ℹ️ SWEEP: User ${lidJid} not found in group participants - already removed or never joined`);
       
       // Still send alert but with different message
       const duration = Date.now() - startTime;
@@ -2596,7 +2555,6 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
     }
 
     // Execute the kick (comprehensive approach with validation)
-    console.log(`[${getTimestamp()}] 🚨 SWEEP: EXECUTING KICK for ${lidJid} (confirmed in group)`);
     
     // Try different user ID formats to maximize success
     const idsToTry = [lidJid];
@@ -2611,29 +2569,23 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
       try {
         // Validate the ID format before attempting kick
         if (!idToTry || idToTry.length < 10 || !idToTry.includes('@')) {
-          console.log(`[${getTimestamp()}] ⚠️ SWEEP: Skipping invalid ID format: ${idToTry}`);
           continue;
         }
         
-        console.log(`[${getTimestamp()}] 🎯 SWEEP: Attempting kick with ID: ${idToTry}`);
         const individualKickSuccess = await robustKickUser(chat, idToTry, `comprehensive sweep - ${source}`);
         
         if (individualKickSuccess) {
-          console.log(`[${getTimestamp()}] ✅ SWEEP: KICK EXECUTED successfully with ${idToTry}`);
           kickSuccessful = true;
           break;
         } else {
-          console.log(`[${getTimestamp()}] ❌ SWEEP: Robust kick failed for ${idToTry}`);
           lastError = new Error('Robust kick method failed');
         }
         
       } catch (kickError) {
-        console.log(`[${getTimestamp()}] ⚠️ SWEEP: Kick attempt failed with ${idToTry}: ${kickError.message}`);
         lastError = kickError;
         
         // If error suggests empty array, try refreshing group info
         if (kickError.message.includes('expected at least 1 children')) {
-          console.log(`[${getTimestamp()}] 🔄 SWEEP: Refreshing group data and retrying...`);
           try {
             await chat.fetchMessages();
             await new Promise(resolve => setTimeout(resolve, 1000));
@@ -2645,7 +2597,6 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
             });
             
             if (!stillExists) {
-              console.log(`[${getTimestamp()}] ℹ️ SWEEP: User ${idToTry} no longer in group after refresh`);
               kickSuccessful = true;
               break;
             }
@@ -2653,16 +2604,13 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
             // Try one more time after refresh using robust method
             const retryKickSuccess = await robustKickUser(chat, idToTry, `comprehensive sweep retry - ${source}`);
             if (retryKickSuccess) {
-              console.log(`[${getTimestamp()}] ✅ SWEEP: KICK EXECUTED successfully after refresh with ${idToTry}`);
               kickSuccessful = true;
               break;
             } else {
-              console.log(`[${getTimestamp()}] ❌ SWEEP: Robust kick retry also failed for ${idToTry}`);
               lastError = new Error('Robust kick retry failed');
             }
             
           } catch (retryError) {
-            console.log(`[${getTimestamp()}] ❌ SWEEP: Retry also failed: ${retryError.message}`);
             lastError = retryError;
           }
         }
@@ -2691,9 +2639,7 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
     });
     
     if (stillInGroup) {
-      console.log(`[${getTimestamp()}] ⚠️ SWEEP: User still appears in group after kick attempt`);
     } else {
-      console.log(`[${getTimestamp()}] ✅ SWEEP: Confirmed user removed from group`);
     }
 
     // Notify the kicked user
@@ -2705,7 +2651,6 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
       ].join('\n');
       await client.sendMessage(lidJid, messageToUser);
     } catch (e) {
-      console.log(`[${getTimestamp()}] ⚠️ SWEEP: Could not notify kicked user: ${e.message}`);
     }
 
     // Get group URL for admin alert
@@ -2714,7 +2659,6 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
       const inviteCode = await chat.getInviteCode();
       groupURL = `https://chat.whatsapp.com/${inviteCode}`;
     } catch (e) {
-      console.log(`[${getTimestamp()}] ⚠️ SWEEP: Could not get group invite code`);
     }
 
     // Comprehensive alert to admin
@@ -2737,7 +2681,6 @@ async function kickBlacklistedUser(chat, userId, source = 'unknown') {
     await client.sendMessage(`${ALERT_PHONE}@c.us`, alert);
     await client.sendMessage(`${ALERT_PHONE}@c.us`, `#unblacklist ${legacyJid}`);
     
-    console.log(`[${getTimestamp()}] ✅ SWEEP: Complete! Total time: ${duration}ms`);
     return true;
 
   } catch (error) {
@@ -2751,16 +2694,13 @@ client.on('group_update', async (evt) => {
   try {
     if (evt.action !== 'add' && evt.action !== 'promote') return;
     
-    console.log(`[${getTimestamp()}] 👥 Group update detected: ${evt.action}`);
     
     const chat = await client.getChatById(evt.id.remote).catch(() => null);
     if (!chat?.isGroup) return;
     
-    console.log(`[${getTimestamp()}] 📍 Group: ${chat.name}`);
     
     // Check each participant affected by the update
     for (const participantId of evt.participants) {
-      console.log(`[${getTimestamp()}] 🔍 Checking participant from group_update: ${participantId}`);
       
       // Use comprehensive kick function (no time pressure)
       setTimeout(async () => {
@@ -2783,11 +2723,9 @@ client.on('message', async msg => {
     
     // Check if sender is admin
     if (senderJid !== `${ADMIN_PHONE}@c.us`) {
-      console.log(`[${getTimestamp()}] ⚠️ Non-admin tried to use #sweep: ${senderJid}`);
       return;
     }
     
-    console.log(`[${getTimestamp()}] 🔧 MANUAL SWEEP: Admin requested sweep via ${senderJid}`);
     
     const chat = await msg.getChat();
     if (!chat.isGroup) {
@@ -2798,7 +2736,6 @@ client.on('message', async msg => {
     await msg.reply('🔄 Starting comprehensive blacklist sweep for this group...');
     
     let kickedCount = 0;
-    console.log(`[${getTimestamp()}] 🔧 MANUAL SWEEP: Checking ${chat.participants.length} members in ${chat.name}`);
     
     for (const participant of chat.participants) {
       const participantId = getParticipantJid(participant);
@@ -2810,7 +2747,6 @@ client.on('message', async msg => {
     }
     
     await msg.reply(`✅ Sweep complete! ${kickedCount} blacklisted users were removed.`);
-    console.log(`[${getTimestamp()}] ✅ MANUAL SWEEP: Complete - kicked ${kickedCount} users`);
     
   } catch (error) {
     console.error(`[${getTimestamp()}] ❌ Error in manual sweep: ${error.message}`);
