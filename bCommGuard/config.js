@@ -19,13 +19,14 @@ module.exports = {
   FEATURES: {
     INVITE_LINK_DETECTION: true,
     AUTO_KICK_BLACKLISTED: true,
-    FIREBASE_INTEGRATION: true,
+    FIREBASE_INTEGRATION: true, // Enable Firebase integration
+    RESTRICT_COUNTRY_CODES: true, // Auto-kick +1 and +6 numbers
   },
   
   // Regex patterns
   PATTERNS: {
-    INVITE_LINK: /https?:\/\/(chat\.)?whatsapp\.com\/(chat\/)?([A-Za-z0-9]{10,})/gi,
-    PHONE_NUMBER: /\d{10,15}/g,
+    INVITE_LINK: /https?:\/\/(chat\.)?whatsapp\.com\/(chat\/)?([A-Za-z0-9]{6,})/gi,
+    PHONE_NUMBER: /^\d{10,15}$/,
   },
   
   // Logging

@@ -10,8 +10,11 @@ if (!admin.apps.length) {
     // Try current directory first, then parent directory
     try {
       serviceAccount = require(path.join(__dirname, 'guard1-dbkey.json'));
+      console.log('📍 Found key in bCommGuard directory');
     } catch (e) {
+      console.log('📍 Looking for key in parent directory...');
       serviceAccount = require(path.join(__dirname, '..', 'guard1-dbkey.json'));
+      console.log('📍 Found key in parent directory');
     }
     
     // Validate that it's not a mock key

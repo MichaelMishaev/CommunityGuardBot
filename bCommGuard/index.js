@@ -5,6 +5,9 @@ const pino = require('pino');
 const { logger, getTimestamp } = require('./utils/logger');
 const config = require('./config');
 const { loadBlacklistCache, isBlacklisted, addToBlacklist } = require('./services/blacklistService');
+const { loadWhitelistCache, isWhitelisted } = require('./services/whitelistService');
+const { loadMutedUsers, isMuted, incrementMutedMessageCount } = require('./services/muteService');
+const CommandHandler = require('./services/commandHandler');
 
 // Track kicked users to prevent spam
 const kickCooldown = new Map();
@@ -21,8 +24,10 @@ const baileysLogger = pino({
 
 // Main function to start the bot
 async function startBot() {
-    // Load blacklist cache
+    // Load all caches
     await loadBlacklistCache();
+    await loadWhitelistCache();
+    await loadMutedUsers();
     
     console.log(`[${getTimestamp()}] 🔄 Starting bot connection (attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})...`);
     
@@ -150,6 +155,9 @@ async function startBot() {
         }
     });
     
+    // Initialize command handler
+    const commandHandler = new CommandHandler(sock);
+
     // Handle incoming messages
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         // Only process new messages
@@ -157,7 +165,7 @@ async function startBot() {
         
         for (const msg of messages) {
             try {
-                await handleMessage(sock, msg);
+                await handleMessage(sock, msg, commandHandler);
             } catch (error) {
                 console.error(`Error handling message:`, error);
             }
@@ -175,9 +183,13 @@ async function startBot() {
 }
 
 // Handle incoming messages
-async function handleMessage(sock, msg) {
-    // Skip if not from group
-    if (!msg.key.remoteJid.endsWith('@g.us')) return;
+async function handleMessage(sock, msg, commandHandler) {
+    // Check if it's a group or private message
+    const isGroup = msg.key.remoteJid.endsWith('@g.us');
+    const isPrivate = msg.key.remoteJid.endsWith('@s.whatsapp.net');
+    
+    // Skip if not from group or private chat
+    if (!isGroup && !isPrivate) return;
     
     // Skip if from self
     if (msg.key.fromMe) return;
@@ -193,18 +205,135 @@ async function handleMessage(sock, msg) {
     
     // Skip if no text
     if (!messageText) return;
+
+    const chatId = msg.key.remoteJid;
+    const senderId = msg.key.participant || msg.key.remoteJid;
+    
+    // Handle private message commands from admin
+    if (isPrivate) {
+        const senderPhone = senderId.split('@')[0];
+        
+        // Check if it's admin (handle both regular and LID format)
+        const isAdmin = senderPhone === config.ALERT_PHONE || 
+                       senderPhone === config.ADMIN_PHONE ||
+                       senderId.includes(config.ALERT_PHONE) ||
+                       senderId.includes(config.ADMIN_PHONE);
+        
+        // Only process commands from admin in private
+        if (isAdmin && messageText.startsWith('#')) {
+            const parts = messageText.trim().split(/\s+/);
+            const command = parts[0];
+            const args = parts.slice(1).join(' ');
+            
+            // Allow all commands in private from admin
+            const handled = await commandHandler.handleCommand(msg, command, args, true, true);
+            if (handled) return;
+            
+            // If command wasn't handled, show unknown command
+            await sock.sendMessage(chatId, { 
+                text: '❌ Unknown command. Use #help to see available commands.' 
+            });
+        }
+        return;
+    }
+    
+    // Continue with group message handling
+    const groupId = chatId;
+
+    // Check if user is whitelisted (whitelisted users bypass all restrictions)
+    if (isWhitelisted(senderId)) {
+        return;
+    }
+
+    // Get group metadata for admin checking
+    let groupMetadata, isAdmin = false, isSuperAdmin = false;
+    try {
+        groupMetadata = await sock.groupMetadata(groupId);
+        
+        // Check if sender is admin
+        const senderParticipant = groupMetadata.participants.find(p => p.id === senderId);
+        isAdmin = senderParticipant && (
+            senderParticipant.admin === 'admin' || 
+            senderParticipant.admin === 'superadmin' ||
+            senderParticipant.isAdmin || 
+            senderParticipant.isSuperAdmin
+        );
+        isSuperAdmin = senderParticipant && (
+            senderParticipant.admin === 'superadmin' ||
+            senderParticipant.isSuperAdmin
+        );
+    } catch (error) {
+        console.error('Failed to get group metadata:', error);
+        return;
+    }
+
+    // Check if group is muted (only allow admin messages)
+    if (commandHandler.isGroupMuted(groupId) && !isAdmin) {
+        try {
+            await sock.sendMessage(groupId, { delete: msg.key });
+            console.log(`[${getTimestamp()}] 🔇 Deleted message from non-admin in muted group`);
+        } catch (error) {
+            console.error('Failed to delete message in muted group:', error);
+        }
+        return;
+    }
+
+    // Check if user is individually muted
+    if (isMuted(senderId) && !isAdmin) {
+        try {
+            await sock.sendMessage(groupId, { delete: msg.key });
+            const msgCount = incrementMutedMessageCount(senderId);
+            console.log(`[${getTimestamp()}] 🔇 Deleted message from muted user (${msgCount} messages deleted)`);
+            
+            // Kick user if they send too many messages while muted (after 10 messages)
+            if (msgCount >= 10) {
+                try {
+                    await sock.groupParticipantsUpdate(groupId, [senderId], 'remove');
+                    console.log(`[${getTimestamp()}] 👢 Kicked muted user for excessive messaging`);
+                } catch (kickError) {
+                    console.error('Failed to kick muted user:', kickError);
+                }
+            }
+        } catch (error) {
+            console.error('Failed to delete muted user message:', error);
+        }
+        return;
+    }
+
+    // Handle commands (only for admins, except #help)
+    if (messageText.startsWith('#')) {
+        const parts = messageText.trim().split(/\s+/);
+        const command = parts[0];
+        const args = parts.slice(1).join(' ');
+        
+        // Block #help command in groups for security
+        if (command === '#help') {
+            await sock.sendMessage(groupId, { 
+                text: '❌ Unknown command.' 
+            });
+            return;
+        }
+        
+        // Require admin for all other commands
+        if (!isAdmin) {
+            await sock.sendMessage(groupId, { 
+                text: '❌ Only admins can use bot commands.' 
+            });
+            return;
+        }
+        
+        const handled = await commandHandler.handleCommand(msg, command, args, isAdmin, isSuperAdmin);
+        if (handled) return;
+    }
     
     // Check for invite links
     const matches = messageText.match(config.PATTERNS.INVITE_LINK);
     if (!matches || matches.length === 0) return;
     
     console.log(`\n[${getTimestamp()}] 🚨 INVITE LINK DETECTED!`);
-    console.log(`Group: ${msg.key.remoteJid}`);
-    console.log(`Sender: ${msg.key.participant || msg.key.remoteJid}`);
+    console.log(`Group: ${groupId}`);
+    console.log(`Sender: ${senderId}`);
     console.log(`Links: ${matches.join(', ')}`);
-    
-    const groupId = msg.key.remoteJid;
-    const senderId = msg.key.participant || msg.key.remoteJid;
     
     try {
         // Get group metadata
@@ -275,10 +404,21 @@ async function handleMessage(sock, msg) {
         
         // Send alert to admin
         const adminId = config.ALERT_PHONE + '@s.whatsapp.net';
+        
+        // Try to get group invite link
+        let groupLink = 'N/A';
+        try {
+            const inviteCode = await sock.groupInviteCode(groupId);
+            groupLink = `https://chat.whatsapp.com/${inviteCode}`;
+        } catch (err) {
+            console.log('Could not get group invite link:', err.message);
+        }
+        
         const alertMessage = `🚨 *Invite Spam Detected*\n\n` +
                            `📍 Group: ${groupMetadata.subject}\n` +
+                           `🔗 Group Link: ${groupLink}\n` +
                            `👤 User: ${senderId}\n` +
-                           `🔗 Links: ${matches.join(', ')}\n` +
+                           `🔗 Spam Links: ${matches.join(', ')}\n` +
                            `⏰ Time: ${getTimestamp()}\n\n` +
                            `✅ Actions taken:\n` +
                            `• Message deleted\n` +
@@ -322,6 +462,19 @@ async function handleGroupJoin(sock, groupId, participants) {
         
         // Check each participant
         for (const participantId of participants) {
+            // Extract phone number from participant ID
+            const phoneNumber = participantId.split('@')[0];
+            const isLidFormat = participantId.endsWith('@lid');
+            
+            console.log(`👥 New participant: ${phoneNumber} (LID: ${isLidFormat}, length: ${phoneNumber.length})`);
+            
+            // Check if user is whitelisted first
+            if (await isWhitelisted(participantId)) {
+                console.log(`✅ Whitelisted user joined: ${participantId}`);
+                continue; // Skip all checks for whitelisted users
+            }
+            
+            // Check if user is blacklisted
             if (await isBlacklisted(participantId)) {
                 console.log(`🚫 Blacklisted user detected: ${participantId}`);
                 
@@ -338,14 +491,88 @@ async function handleGroupJoin(sock, groupId, participants) {
                     
                     // Alert admin
                     const adminId = config.ALERT_PHONE + '@s.whatsapp.net';
+                    
+                    // Try to get group invite link
+                    let groupLink = 'N/A';
+                    try {
+                        const inviteCode = await sock.groupInviteCode(groupId);
+                        groupLink = `https://chat.whatsapp.com/${inviteCode}`;
+                    } catch (err) {
+                        console.log('Could not get group invite link:', err.message);
+                    }
+                    
                     const alert = `🚨 *Blacklisted User Auto-Kicked*\n\n` +
                                 `📍 Group: ${groupMetadata.subject}\n` +
+                                `🔗 Group Link: ${groupLink}\n` +
                                 `👤 User: ${participantId}\n` +
                                 `⏰ Time: ${getTimestamp()}`;
                     await sock.sendMessage(adminId, { text: alert });
                     
                 } catch (error) {
                     console.error('❌ Failed to kick blacklisted user:', error);
+                }
+                continue; // Skip further checks for this user
+            }
+            
+            // Check if phone number starts with +1 or +6 (or just 1 or 6 without +)
+            // More precise check: US/Canada (+1) has 11 digits, Southeast Asia (+6x) has varying lengths
+            // IMPORTANT: Never kick Israeli numbers (+972)
+            const isIsraeliNumber = phoneNumber.startsWith('972') || phoneNumber.startsWith('+972');
+            
+            if (isIsraeliNumber) {
+                console.log(`🇮🇱 Protecting Israeli number on join: ${phoneNumber}`);
+            }
+            
+            // Handle LID format detection
+            const isLidUSNumber = isLidFormat && phoneNumber.startsWith('1') && phoneNumber.length >= 11;
+            const isLidSEAsiaNumber = isLidFormat && phoneNumber.startsWith('6') && phoneNumber.length >= 10;
+            
+            if (config.FEATURES.RESTRICT_COUNTRY_CODES && !isIsraeliNumber &&
+                ((phoneNumber.startsWith('1') && phoneNumber.length === 11) || // US/Canada format
+                 (phoneNumber.startsWith('+1') && phoneNumber.length === 12) || // US/Canada with +
+                 isLidUSNumber || // LID format US numbers
+                 (phoneNumber.startsWith('6') && phoneNumber.length >= 10 && phoneNumber.length <= 12) || // Southeast Asia
+                 (phoneNumber.startsWith('+6') && phoneNumber.length >= 11 && phoneNumber.length <= 13) || // Southeast Asia with +
+                 isLidSEAsiaNumber)) { // LID format SE Asia numbers
+                
+                console.log(`🚫 Restricted country code detected: ${participantId} (${phoneNumber}, length: ${phoneNumber.length})`);
+                
+                try {
+                    // Remove the user
+                    await sock.groupParticipantsUpdate(groupId, [participantId], 'remove');
+                    console.log('✅ Kicked user with restricted country code');
+                    
+                    // Notify the user
+                    const message = `🚫 You have been automatically removed from ${groupMetadata.subject}.\n\n` +
+                                  `Users from certain regions are restricted from joining this group.\n\n` +
+                                  `If you believe this is a mistake, please contact the group admin.`;
+                    await sock.sendMessage(participantId, { text: message }).catch(() => {});
+                    
+                    // Alert admin with whitelist option
+                    const adminId = config.ALERT_PHONE + '@s.whatsapp.net';
+                    
+                    // Try to get group invite link
+                    let groupLink = 'N/A';
+                    try {
+                        const inviteCode = await sock.groupInviteCode(groupId);
+                        groupLink = `https://chat.whatsapp.com/${inviteCode}`;
+                    } catch (err) {
+                        console.log('Could not get group invite link:', err.message);
+                    }
+                    
+                    const alert = `🚨 *Restricted Country Code Auto-Kick*\n\n` +
+                                `📍 Group: ${groupMetadata.subject}\n` +
+                                `🔗 Group Link: ${groupLink}\n` +
+                                `👤 User: ${participantId}\n` +
+                                `📞 Phone: ${phoneNumber}\n` +
+                                `🌍 Reason: Country code starts with +${phoneNumber.charAt(0)}\n` +
+                                `⏰ Time: ${getTimestamp()}\n\n` +
+                                `To whitelist this user, use:\n` +
+                                `#whitelist ${phoneNumber}`;
+                    await sock.sendMessage(adminId, { text: alert });
+                    
+                } catch (error) {
+                    console.error('❌ Failed to kick user with restricted country code:', error);
                 }
             }
         }
@@ -372,6 +599,7 @@ async function main() {
     console.log(`   • Invite Link Detection: ${config.FEATURES.INVITE_LINK_DETECTION ? '✅' : '❌'}`);
     console.log(`   • Auto-kick Blacklisted: ${config.FEATURES.AUTO_KICK_BLACKLISTED ? '✅' : '❌'}`);
     console.log(`   • Firebase Integration: ${config.FEATURES.FIREBASE_INTEGRATION ? '✅' : '❌'}`);
+    console.log(`   • Restrict +1/+6 Countries: ${config.FEATURES.RESTRICT_COUNTRY_CODES ? '✅' : '❌'}`);
     
     // Check for existing auth
     const fs = require('fs');
