@@ -4,10 +4,48 @@ const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const { logger, getTimestamp } = require('./utils/logger');
 const config = require('./config');
-const { loadBlacklistCache, isBlacklisted, addToBlacklist } = require('./services/blacklistService');
-const { loadWhitelistCache, isWhitelisted } = require('./services/whitelistService');
-const { loadMutedUsers, isMuted, incrementMutedMessageCount } = require('./services/muteService');
+
+// Conditionally load Firebase services only if enabled
+let blacklistService, whitelistService, muteService;
+if (config.FEATURES.FIREBASE_INTEGRATION) {
+    const blacklistModule = require('./services/blacklistService');
+    const whitelistModule = require('./services/whitelistService');
+    const muteModule = require('./services/muteService');
+    
+    blacklistService = {
+        loadBlacklistCache: blacklistModule.loadBlacklistCache,
+        isBlacklisted: blacklistModule.isBlacklisted,
+        addToBlacklist: blacklistModule.addToBlacklist
+    };
+    whitelistService = {
+        loadWhitelistCache: whitelistModule.loadWhitelistCache,
+        isWhitelisted: whitelistModule.isWhitelisted
+    };
+    muteService = {
+        loadMutedUsers: muteModule.loadMutedUsers,
+        isMuted: muteModule.isMuted,
+        incrementMutedMessageCount: muteModule.incrementMutedMessageCount
+    };
+} else {
+    // Mock services when Firebase is disabled
+    blacklistService = {
+        loadBlacklistCache: async () => { console.log('📋 Firebase disabled - skipping blacklist cache load'); },
+        isBlacklisted: () => false,
+        addToBlacklist: async () => { console.log('📋 Firebase disabled - blacklist add skipped'); }
+    };
+    whitelistService = {
+        loadWhitelistCache: async () => { console.log('📋 Firebase disabled - skipping whitelist cache load'); },
+        isWhitelisted: () => false
+    };
+    muteService = {
+        loadMutedUsers: async () => { console.log('📋 Firebase disabled - skipping muted users load'); },
+        isMuted: () => false,
+        incrementMutedMessageCount: async () => { console.log('📋 Firebase disabled - mute count skipped'); }
+    };
+}
+
 const CommandHandler = require('./services/commandHandler');
+const { handleSessionError, clearSessionErrors, mightContainInviteLink, extractMessageText } = require('./utils/sessionManager');
 
 // Track kicked users to prevent spam
 const kickCooldown = new Map();
@@ -25,9 +63,9 @@ const baileysLogger = pino({
 // Main function to start the bot
 async function startBot() {
     // Load all caches
-    await loadBlacklistCache();
-    await loadWhitelistCache();
-    await loadMutedUsers();
+    await blacklistService.loadBlacklistCache();
+    await whitelistService.loadWhitelistCache();
+    await muteService.loadMutedUsers();
     
     console.log(`[${getTimestamp()}] 🔄 Starting bot connection (attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})...`);
     
@@ -158,7 +196,7 @@ async function startBot() {
     // Initialize command handler
     const commandHandler = new CommandHandler(sock);
 
-    // Handle incoming messages
+    // Handle incoming messages with improved error handling
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         // Only process new messages
         if (type !== 'notify') return;
@@ -167,7 +205,48 @@ async function startBot() {
             try {
                 await handleMessage(sock, msg, commandHandler);
             } catch (error) {
-                console.error(`Error handling message:`, error);
+                // Handle session errors specifically
+                if (error.message?.includes('decrypt') || 
+                    error.message?.includes('session') ||
+                    error.message?.includes('Bad MAC')) {
+                    
+                    const result = await handleSessionError(sock, error, msg);
+                    
+                    // If suspicious activity detected, take action
+                    if (result.suspicious && msg.key.remoteJid.endsWith('@g.us')) {
+                        console.log(`🚨 Suspicious encrypted message in group - potential invite spam`);
+                        
+                        try {
+                            // Try to delete the message as a precaution
+                            await sock.sendMessage(msg.key.remoteJid, { delete: msg.key });
+                            console.log('✅ Deleted suspicious encrypted message');
+                            
+                            // Alert admin
+                            const adminId = config.ALERT_PHONE + '@s.whatsapp.net';
+                            const alertMessage = `🚨 *Suspicious Activity Detected*\n\n` +
+                                               `📍 Group: ${msg.key.remoteJid}\n` +
+                                               `👤 User: ${result.userId}\n` +
+                                               `🔒 Issue: Multiple decryption failures\n` +
+                                               `⚠️ Possible invite spam via encrypted message\n` +
+                                               `⏰ Time: ${getTimestamp()}\n\n` +
+                                               `Action taken: Message deleted as precaution`;
+                            await sock.sendMessage(adminId, { text: alertMessage });
+                        } catch (deleteError) {
+                            console.error('Failed to handle suspicious message:', deleteError);
+                        }
+                    }
+                    
+                    // Retry if needed
+                    if (result.retry) {
+                        try {
+                            await handleMessage(sock, msg, commandHandler);
+                        } catch (retryError) {
+                            console.error('Retry failed:', retryError.message);
+                        }
+                    }
+                } else {
+                    console.error(`Error handling message:`, error);
+                }
             }
         }
     });
@@ -197,17 +276,19 @@ async function handleMessage(sock, msg, commandHandler) {
     // Skip if no message content
     if (!msg.message) return;
     
-    // Extract message text
-    const messageText = msg.message?.conversation || 
-                       msg.message?.extendedTextMessage?.text || 
-                       msg.message?.imageMessage?.caption ||
-                       msg.message?.videoMessage?.caption || '';
+    // Extract message text with improved handling
+    const messageText = extractMessageText(msg);
     
-    // Skip if no text
-    if (!messageText) return;
+    // Skip if no text UNLESS it might contain invite link
+    if (!messageText && !mightContainInviteLink(msg)) return;
+    
+    // Clear session errors on successful message
+    const senderId = msg.key.participant || msg.key.remoteJid;
+    if (messageText) {
+        clearSessionErrors(senderId);
+    }
 
     const chatId = msg.key.remoteJid;
-    const senderId = msg.key.participant || msg.key.remoteJid;
     
     // Handle private message commands from admin
     if (isPrivate) {
@@ -241,7 +322,7 @@ async function handleMessage(sock, msg, commandHandler) {
     const groupId = chatId;
 
     // Check if user is whitelisted (whitelisted users bypass all restrictions)
-    if (isWhitelisted(senderId)) {
+    if (await whitelistService.isWhitelisted(senderId)) {
         return;
     }
 
@@ -279,10 +360,10 @@ async function handleMessage(sock, msg, commandHandler) {
     }
 
     // Check if user is individually muted
-    if (isMuted(senderId) && !isAdmin) {
+    if (await muteService.isMuted(senderId) && !isAdmin) {
         try {
             await sock.sendMessage(groupId, { delete: msg.key });
-            const msgCount = incrementMutedMessageCount(senderId);
+            const msgCount = await muteService.incrementMutedMessageCount(senderId);
             console.log(`[${getTimestamp()}] 🔇 Deleted message from muted user (${msgCount} messages deleted)`);
             
             // Kick user if they send too many messages while muted (after 10 messages)
@@ -386,7 +467,7 @@ async function handleMessage(sock, msg, commandHandler) {
         }
         
         // Add to blacklist
-        await addToBlacklist(senderId, 'Sent invite link spam');
+        await blacklistService.addToBlacklist(senderId, 'Sent invite link spam');
         
         // Kick the user
         try {
@@ -438,25 +519,16 @@ async function handleGroupJoin(sock, groupId, participants) {
     
     try {
         const groupMetadata = await sock.groupMetadata(groupId);
-        const botPhone = sock.user.id.split(':')[0];
-        const botId = sock.user.id;
         
-        // Check if bot is admin using multiple methods
-        const botParticipant = groupMetadata.participants.find(p => 
-            p.id === botId || 
-            p.id === `${botPhone}@s.whatsapp.net` || 
-            p.id.includes(botPhone)
-        );
+        // Use the correct bot admin check
+        const { isBotAdmin: checkBotAdmin } = require('./utils/botAdminChecker');
+        const botIsAdmin = await checkBotAdmin(sock, groupId);
         
-        const isBotAdmin = botParticipant && (
-            botParticipant.admin === 'admin' || 
-            botParticipant.admin === 'superadmin' ||
-            botParticipant.isAdmin || 
-            botParticipant.isSuperAdmin
-        );
-        
-        if (!isBotAdmin) {
+        if (!botIsAdmin) {
             console.log('❌ Bot is not admin, cannot check blacklist');
+            // Log additional debug info
+            const { debugBotId } = require('./utils/botAdminChecker');
+            debugBotId(sock);
             return;
         }
         
@@ -469,13 +541,13 @@ async function handleGroupJoin(sock, groupId, participants) {
             console.log(`👥 New participant: ${phoneNumber} (LID: ${isLidFormat}, length: ${phoneNumber.length})`);
             
             // Check if user is whitelisted first
-            if (await isWhitelisted(participantId)) {
+            if (await whitelistService.isWhitelisted(participantId)) {
                 console.log(`✅ Whitelisted user joined: ${participantId}`);
                 continue; // Skip all checks for whitelisted users
             }
             
             // Check if user is blacklisted
-            if (await isBlacklisted(participantId)) {
+            if (await blacklistService.isBlacklisted(participantId)) {
                 console.log(`🚫 Blacklisted user detected: ${participantId}`);
                 
                 try {

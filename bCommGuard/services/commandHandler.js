@@ -84,6 +84,11 @@ class CommandHandler {
                 case '#debugnumbers':
                     return await this.handleDebugNumbers(msg, isAdmin);
                     
+                case '#sessioncheck':
+                    return await this.handleSessionCheck(msg, isAdmin);
+                    
+                case '#botadmin':
+                    return await this.handleBotAdminCheck(msg, isAdmin);
                     
                 default:
                     return false; // Command not handled
@@ -159,6 +164,8 @@ class CommandHandler {
 
 *🧹 Advanced Commands:*
 • *#sweep* - Clean up inactive users (superadmin)
+• *#sessioncheck* - Check for session decryption errors
+• *#botadmin* - Check if bot has admin privileges
 
 *🚨 Auto-Protection Features:*
 • **Invite Link Detection** - Auto-kick + blacklist
@@ -436,12 +443,7 @@ class CommandHandler {
             // Kick the user
             await this.sock.groupParticipantsUpdate(groupId, [targetUserId], 'remove');
 
-            // Confirm in group
-            await this.sock.sendMessage(groupId, { 
-                text: `👢 User has been kicked from the group by admin.` 
-            });
-
-            // Add to blacklist
+            // Add to blacklist (no group message sent)
             const { addToBlacklist } = require('./blacklistService');
             await addToBlacklist(targetUserId, 'Kicked by admin command');
 
@@ -1192,6 +1194,112 @@ Thank you for your cooperation.`;
             await this.sock.sendMessage(groupId, { 
                 text: '❌ Failed to scan for blacklisted users. Make sure the bot has admin privileges.' 
             });
+        }
+        
+        return true;
+    }
+    
+    async handleSessionCheck(msg, isAdmin) {
+        if (!isAdmin) {
+            await this.sock.sendMessage(msg.key.remoteJid, { 
+                text: '❌ Only admins can check sessions.' 
+            });
+            return true;
+        }
+
+        const { sessionErrors, failedDecryptions } = require('../utils/sessionManager');
+        const { getTimestamp } = require('../utils/logger');
+        
+        // Prepare session health report
+        let report = `🔒 *Session Health Check*\n\n`;
+        report += `⏰ Time: ${getTimestamp()}\n\n`;
+        
+        // Check for problematic users
+        if (sessionErrors.size === 0) {
+            report += `✅ No session errors detected\n`;
+        } else {
+            report += `⚠️ *Users with session errors:*\n`;
+            let count = 0;
+            for (const [userId, errors] of sessionErrors.entries()) {
+                if (count++ < 10) { // Limit to first 10
+                    report += `• ${userId}: ${errors.length} errors\n`;
+                }
+            }
+            if (sessionErrors.size > 10) {
+                report += `... and ${sessionErrors.size - 10} more\n`;
+            }
+        }
+        
+        report += `\n📊 *Statistics:*\n`;
+        report += `• Failed decryptions: ${failedDecryptions.size}\n`;
+        report += `• Problematic sessions: ${sessionErrors.size}\n`;
+        
+        // Recommendations
+        if (sessionErrors.size > 0 || failedDecryptions.size > 50) {
+            report += `\n💡 *Recommendations:*\n`;
+            report += `• Consider restarting the bot\n`;
+            report += `• If errors persist, clear auth folder\n`;
+            report += `• Monitor for spam from listed users\n`;
+        }
+        
+        await this.sock.sendMessage(msg.key.remoteJid, { text: report });
+        return true;
+    }
+    
+    async handleBotAdminCheck(msg, isAdmin) {
+        if (!isAdmin) {
+            await this.sock.sendMessage(msg.key.remoteJid, { 
+                text: '❌ Only admins can check bot status.' 
+            });
+            return true;
+        }
+
+        const { isBotAdmin, getBotGroupStatus, debugBotId } = require('../utils/botAdminChecker');
+        const { getTimestamp } = require('../utils/logger');
+        
+        // If in group, check this group
+        if (msg.key.remoteJid.endsWith('@g.us')) {
+            const groupId = msg.key.remoteJid;
+            
+            try {
+                // Get detailed status
+                const status = await getBotGroupStatus(this.sock, groupId);
+                
+                let report = `🤖 *Bot Admin Status*\n\n`;
+                report += `📍 Group: ${status.groupName}\n`;
+                report += `🆔 Bot ID: ${status.botId}\n`;
+                report += `👮 Admin Status: ${status.adminStatus || 'Not in group'}\n`;
+                report += `✅ Is Admin: ${status.isAdmin ? 'Yes' : 'No'}\n`;
+                report += `👥 Total Participants: ${status.participantCount}\n`;
+                report += `👮 Total Admins: ${status.adminCount}\n`;
+                report += `⏰ Time: ${getTimestamp()}\n\n`;
+                
+                if (!status.isAdmin) {
+                    report += `⚠️ *Bot needs admin privileges to:*\n`;
+                    report += `• Delete messages\n`;
+                    report += `• Kick users\n`;
+                    report += `• Check blacklist on join\n\n`;
+                    report += `🔧 *To fix: Make bot admin in group settings*`;
+                }
+                
+                await this.sock.sendMessage(groupId, { text: report });
+                
+            } catch (error) {
+                await this.sock.sendMessage(groupId, { 
+                    text: `❌ Error checking bot status: ${error.message}` 
+                });
+            }
+        } else {
+            // In private chat, show bot ID info
+            const botInfo = debugBotId(this.sock);
+            
+            let report = `🤖 *Bot Information*\n\n`;
+            report += `🆔 Bot ID: ${botInfo.fullId}\n`;
+            report += `📱 Phone: ${botInfo.phone}\n`;
+            report += `⏰ Time: ${getTimestamp()}\n\n`;
+            report += `💡 Use this command in a group to check admin status`;
+            
+            await this.sock.sendMessage(msg.key.remoteJid, { text: report });
         }
         
         return true;
