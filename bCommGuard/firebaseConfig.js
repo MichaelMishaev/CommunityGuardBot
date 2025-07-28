@@ -22,12 +22,18 @@ if (config.FEATURES.FIREBASE_INTEGRATION) {
     try {
       // Try current directory first, then parent directory
       try {
-        serviceAccount = require(path.join(__dirname, 'guard1-dbkey.json'));
+        serviceAccount = require(path.join(__dirname, 'guard1-d43a3-firebase-adminsdk-fbsvc-5c63dc49fd.json'));
         console.log('📍 Found key in bCommGuard directory');
       } catch (e) {
         console.log('📍 Looking for key in parent directory...');
-        serviceAccount = require(path.join(__dirname, '..', 'guard1-dbkey.json'));
-        console.log('📍 Found key in parent directory');
+        try {
+          serviceAccount = require(path.join(__dirname, '..', 'guard1-d43a3-firebase-adminsdk-fbsvc-5c63dc49fd.json'));
+          console.log('📍 Found key in parent directory');
+        } catch (e2) {
+          // Try old filename as fallback
+          serviceAccount = require(path.join(__dirname, '..', 'guard1-dbkey.json'));
+          console.log('📍 Found key with old filename in parent directory');
+        }
       }
       
       // Validate that it's not a mock key
@@ -43,7 +49,7 @@ if (config.FEATURES.FIREBASE_INTEGRATION) {
       console.warn('   Firebase features will be disabled. To enable:');
       console.warn('   1. Go to Firebase Console');
       console.warn('   2. Generate a service account key');
-      console.warn('   3. Save it as guard1-dbkey.json in project root');
+      console.warn('   3. Save it as guard1-d43a3-firebase-adminsdk-fbsvc-5c63dc49fd.json in bCommGuard directory');
     }
 
     try {
