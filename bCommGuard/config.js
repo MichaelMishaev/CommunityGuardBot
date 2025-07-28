@@ -19,7 +19,7 @@ module.exports = {
   FEATURES: {
     INVITE_LINK_DETECTION: true,
     AUTO_KICK_BLACKLISTED: true,
-    FIREBASE_INTEGRATION: false, // Enable Firebase integration
+    FIREBASE_INTEGRATION: true, // Enable Firebase integration
     RESTRICT_COUNTRY_CODES: true, // Auto-kick +1 and +6 numbers
   },
   
